@@ -76,6 +76,7 @@ claude mcp add tia -- "D:\path\to\TiaMcp\bin\Release\net48\TiaMcp.exe" mcp
 - **PLC 写/重构**：`import-scl` `import-xml` `import-udt` `write-tags` `delete-tags` `edit-tags` `delete-block` `rename-block` `set-block-number`
 - **编译/工程**：`compile` `compile-device` `export-all` `export-watchtable` `project-info` `project-save` `project-archive` `export-project-texts` `import-project-texts`
 - **HMI 读**：`hmi-list` `hmi-read-tags` `hmi-read-screens` `hmi-read-screen` `hmi-read-templates` `hmi-read-connections` `hmi-export-all`
+- **HMI 变量使用分析**：`hmi-find-unused-tags`（孤儿/死代码候选）`hmi-tag-usage`（单变量反查，对标 where-used）
 - **HMI 写**：`hmi-write-tags` `hmi-delete-tags` `hmi-export-screen` `hmi-import-screen` `hmi-delete-screen` `hmi-export-template` `hmi-import-template` `hmi-delete-template` `hmi-import-list` `hmi-delete-list`
 
 ### 入参约定（见各工具 inputSchema）

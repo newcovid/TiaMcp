@@ -535,6 +535,38 @@
 - **退出码**：0 成功；1 找不到画面。
 - **MCP 备注**：解析摘要打 stdout，但底层导出 XML 实测 ~20 万字符；**stderr 还 dump 700 字符样例**。MCP 化只回 `{objectCount,objects[],xmlCharCount,artifactPath}`，删 stderr dump。**最高优先污染项**。
 
+### `hmi-find-unused-tags` 🆕
+- **用途**：HMI **死代码候选**——把声明变量(解析变量表 XML 的全集)与画面+模板里**实际引用**的变量交叉比对，列出「建了但没摆上任何画面/模板」的孤儿。对标 PLC `find-unused`。`hmi-read-tags` 只到变量表层下不了「真在用」的结论，本命令补这一步。
+- **检测口径**：结构化 XML 解析——画面/模板导出 XML 里「local-name 含 'Tag' 且带直接子 `<Name>`」的元素即变量引用（非文本子串扫描，避免中文文本标签被误判成「在用」）。扫**画面 + 模板**两类容器。
+- **输出示例**：
+  ```
+  ==== HMI 设备: HMI_1 · 变量画面使用审计(扫 画面+模板) ====
+    声明变量 562 | 在用 540 | 孤儿 22
+    扫描范围: 44 画面 + 2 模板
+    -- 孤儿变量(未被任何画面/模板引用) --
+      [表 BatteryDataBlock] OldTag_X                          ←PLC BatteryDataBlock.OldX
+    (共 22 个孤儿)
+    ⚠ 边界: "未引用" 仅指画面/模板;报警/调度器/变量多路复用本工具不扫描 —— 未在用 != 可安全删,删前在博图确认。
+    [大产物] 全量"变量->引用画面"映射 已写 %TEMP%\TiaMcp_<guid>.txt (charCount=...)
+  ```
+- **退出码**：0。
+- **MCP 备注**：摘要计数 + 孤儿清单内联（可操作部分恒内联）；全量「变量→引用画面」映射 >8KB 写 `%TEMP%` 回路径 + charCount，别灌爆上下文。**孤儿 ≠ 可删**：工具说明须写死「不扫报警/调度器/多路复用」边界，防 AI 误判可安全删。
+
+### `hmi-tag-usage <变量名>` 🆕
+- **用途**：单 HMI 变量**反查**——列出引用它的(画面/模板, 控件类型, 控件名)，回显其绑定的 PLC 变量，给出在用/孤儿状态。对标 PLC `where-used`，重构某变量前查影响面。
+- **输出示例**：
+  ```
+  ==== HMI_1 · 变量使用 "BatteryDataBlock_Battery_SOC" ====
+    声明于变量表: BatteryDataBlock   (绑定 PLC: BatteryDataBlock.Battery_SOC)
+    被 3 处引用:
+      画面 0100_信号交互          IOField SOC_Display
+      画面 0040_ManualScreen      Bar bar_soc
+      模板 template_1             TextField hdr_soc
+    状态: 在用
+  ```
+- **退出码**：0；变量找不到时打提示(用 `hmi-read-tags` 查准名)返回 1。
+- **MCP 备注**：单变量输出小、可全内联。变量名精确匹配（大小写不敏感）。同 `hmi-find-unused-tags` 的报警/调度器边界：0 引用 → 孤儿但不等于可删。
+
 ### `hmi-read-templates` 🆕
 - **用途**：列出 HMI **模板画面(母版**：页眉/页脚/永久区，被普通画面继承)。模板独立于普通画面，存于 `ScreenTemplateFolder`。
 - **输出示例**：

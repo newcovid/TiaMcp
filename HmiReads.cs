@@ -365,6 +365,178 @@ namespace TiaMcp
             return name;
         }
 
+        // ===== 变量画面使用分析(hmi-find-unused-tags / hmi-tag-usage 共用) =====
+        private sealed class TagDecl { public string Name; public string Table; public string Plc; }
+        private sealed class TagRef { public string TagName; public string Container; public string ContainerKind; public string ObjectType; public string ObjectName; }
+
+        // 解析所有变量表导出 XML,取声明变量全集 + 绑定的 PLC 变量。只读,经 %TEMP%。
+        private static List<TagDecl> CollectDeclaredTags(HmiTarget hmi)
+        {
+            var result = new List<TagDecl>();
+            var tables = new List<TagTable>(); CollectTagTables(hmi.TagFolder, tables);
+            foreach (TagTable t in tables)
+            {
+                string tmp = IoUtil.NewTempFile(".xml");
+                try
+                {
+                    if (File.Exists(tmp)) File.Delete(tmp);
+                    t.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
+                    var doc = XDocument.Parse(IoUtil.ReadPlaintext(tmp));
+                    foreach (var te in doc.Descendants().Where(e => e.Name.LocalName == "Hmi.Tag.Tag"))
+                    {
+                        string name = ChildText(te, "Name");
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        result.Add(new TagDecl { Name = name, Table = t.Name, Plc = LinkName(te, "ControllerTag") ?? "-" });
+                    }
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"[diag] 变量表导出失败 {Safe(() => t.Name)}: {ex.Message}"); Logger.Error("tag-usage tags export", ex); }
+                finally { try { File.Delete(tmp); } catch { } }
+            }
+            return result;
+        }
+
+        // 一次性导出该 HMI 全部画面+模板,解析出 变量名(OrdinalIgnoreCase) -> 引用列表。
+        private static Dictionary<string, List<TagRef>> BuildTagUsageIndex(HmiTarget hmi, out int screenCount, out int templateCount)
+        {
+            var index = new Dictionary<string, List<TagRef>>(StringComparer.OrdinalIgnoreCase);
+            var screens = new List<Screen>(); CollectScreens(hmi.ScreenFolder, screens);
+            var templates = new List<ScreenTemplate>(); CollectTemplates(hmi.ScreenTemplateFolder, templates);
+            screenCount = screens.Count; templateCount = templates.Count;
+            foreach (Screen sc in screens) ScanContainer(fi => sc.Export(fi, ExportOptions.WithDefaults), Safe(() => sc.Name), "画面", index);
+            foreach (ScreenTemplate t in templates) ScanContainer(fi => t.Export(fi, ExportOptions.WithDefaults), Safe(() => t.Name), "模板", index);
+            return index;
+        }
+
+        // 导出单容器 XML(经 %TEMP% 校验明文)→ 解析全部变量引用 → 灌入 index。零引用/失败走 stderr [diag]。
+        private static void ScanContainer(Action<FileInfo> exportFn, string container, string kind, Dictionary<string, List<TagRef>> index)
+        {
+            string xml; string tmp = IoUtil.NewTempFile(".xml");
+            try { if (File.Exists(tmp)) File.Delete(tmp); exportFn(new FileInfo(tmp)); xml = IoUtil.ReadPlaintext(tmp); }
+            catch (Exception ex) { Console.Error.WriteLine($"[diag] 导出失败 {kind} {container}: {ex.Message}"); Logger.Error("tag-usage export " + container, ex); return; }
+            finally { try { File.Delete(tmp); } catch { } }
+
+            XDocument doc;
+            try { doc = XDocument.Parse(xml); }
+            catch (Exception ex) { Console.Error.WriteLine($"[diag] 解析失败 {kind} {container}: {ex.Message}"); return; }
+
+            var refs = CollectTagRefs(doc, container, kind);
+            foreach (var r in refs)
+            {
+                if (!index.TryGetValue(r.TagName, out var list)) { list = new List<TagRef>(); index[r.TagName] = list; }
+                list.Add(r);
+            }
+            if (refs.Count == 0) Console.Error.WriteLine($"[diag] 零引用容器: {kind} {container}");
+        }
+
+        // 收集容器 XML 里全部变量引用:后代 local-name 含 "Tag" 且带直接子 <Name>;归属最近 Hmi.Screen.* 祖先对象。
+        private static List<TagRef> CollectTagRefs(XDocument doc, string container, string kind)
+        {
+            var result = new List<TagRef>();
+            var refEls = doc.Descendants().Where(x =>
+                x.Name.LocalName.IndexOf("Tag", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                x.Elements().Any(c => c.Name.LocalName == "Name"));
+            foreach (var refEl in refEls)
+            {
+                string tagName = ChildText(refEl, "Name");
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+                var obj = refEl.Ancestors().FirstOrDefault(a =>
+                    a.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal) && a.Name.LocalName != "Hmi.Screen.Screen");
+                string objType = obj != null ? obj.Name.LocalName.Replace("Hmi.Screen.", "") : "";
+                string objName = obj != null ? (ChildText(obj, "ObjectName") ?? ChildText(obj, "Name") ?? "") : "";
+                result.Add(new TagRef { TagName = tagName, Container = container, ContainerKind = kind, ObjectType = objType, ObjectName = objName });
+            }
+            return result;
+        }
+
+        // ===== hmi-find-unused-tags:声明变量 vs 画面/模板实际引用,列孤儿 =====
+        public static int HmiFindUnusedTags()
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    HmiTarget hmi = kv.Value;
+                    var declared = CollectDeclaredTags(hmi);
+                    var index = BuildTagUsageIndex(hmi, out int screenCount, out int templateCount);
+                    var orphans = declared.Where(d => !index.ContainsKey(d.Name)).OrderBy(d => d.Table).ThenBy(d => d.Name).ToList();
+                    int inUse = declared.Count - orphans.Count;
+
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} · 变量画面使用审计(扫 画面+模板) ====");
+                    Console.WriteLine($"  声明变量 {declared.Count} | 在用 {inUse} | 孤儿 {orphans.Count}");
+                    Console.WriteLine($"  扫描范围: {screenCount} 画面 + {templateCount} 模板");
+                    Console.WriteLine("  -- 孤儿变量(未被任何画面/模板引用) --");
+                    foreach (var o in orphans) Console.WriteLine($"    [表 {o.Table}] {o.Name,-40} ←PLC {o.Plc}");
+                    Console.WriteLine($"  (共 {orphans.Count} 个孤儿)");
+                    Console.WriteLine("  ⚠ 边界: \"未引用\" 仅指画面/模板;报警(离散/模拟报警触发变量)、调度器、变量多路复用本工具不扫描 —— 未在用 != 可安全删,删前在博图确认。");
+
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var d in declared.OrderBy(d => d.Table).ThenBy(d => d.Name))
+                    {
+                        if (index.TryGetValue(d.Name, out var refs))
+                        {
+                            var distinct = refs.Select(r => $"{r.ContainerKind} {r.Container}").Distinct().ToList();
+                            sb.AppendLine($"[在用] {d.Name}  ({distinct.Count} 处): " + string.Join(", ", distinct));
+                        }
+                        else sb.AppendLine($"[孤儿] {d.Name}  (表 {d.Table}, PLC {d.Plc})");
+                    }
+                    string map = sb.ToString();
+                    if (map.Length > 8000)
+                    {
+                        string outPath = IoUtil.NewTempFile(".txt");
+                        File.WriteAllText(outPath, map, new System.Text.UTF8Encoding(false));
+                        Console.WriteLine($"  [大产物] 全量\"变量->引用画面\"映射 已写 {outPath} (charCount={map.Length})");
+                    }
+                    else { Console.WriteLine("  -- 全量映射 --"); Console.Write(map); }
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+
+        // ===== hmi-tag-usage <变量名>:单变量反查被哪些画面/模板/控件引用 =====
+        public static int HmiTagUsage(string tagName)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                bool found = false;
+                foreach (var kv in hmis)
+                {
+                    HmiTarget hmi = kv.Value;
+                    var declared = CollectDeclaredTags(hmi);
+                    var decl = declared.FirstOrDefault(d => string.Equals(d.Name, tagName, StringComparison.OrdinalIgnoreCase));
+                    if (decl == null) continue;
+                    found = true;
+
+                    var index = BuildTagUsageIndex(hmi, out _, out _);
+                    Console.WriteLine($"==== {kv.Key} · 变量使用 \"{decl.Name}\" ====");
+                    Console.WriteLine($"  声明于变量表: {decl.Table}   (绑定 PLC: {decl.Plc})");
+                    if (index.TryGetValue(decl.Name, out var refs) && refs.Count > 0)
+                    {
+                        var rows = refs.Select(r => new { r.ContainerKind, r.Container, r.ObjectType, r.ObjectName }).Distinct().ToList();
+                        Console.WriteLine($"  被 {rows.Count} 处引用:");
+                        foreach (var r in rows)
+                        {
+                            string obj = string.IsNullOrEmpty(r.ObjectType) ? "(容器级)" : $"{r.ObjectType} {r.ObjectName}";
+                            Console.WriteLine($"    {r.ContainerKind} {r.Container,-22} {obj}");
+                        }
+                        Console.WriteLine("  状态: 在用");
+                    }
+                    else
+                    {
+                        Console.WriteLine("  被 0 处引用 -> 孤儿");
+                        Console.WriteLine("  ⚠ 边界: 仅扫画面/模板;报警/调度器/多路复用未扫,删前博图确认。");
+                    }
+                    Console.WriteLine();
+                }
+                if (!found) { Console.WriteLine($"找不到 HMI 变量: {tagName}（提示: 用 hmi-read-tags 查准确名）"); return 1; }
+                return 0;
+            }
+        }
+
         // [接入点-后续方法]
 
         private static string Safe(Func<object> f)

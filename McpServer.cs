@@ -315,6 +315,9 @@ namespace TiaMcp
             new ToolDef{ Name="hmi-read-connections", Desc="HMI 连接名" },
             new ToolDef{ Name="hmi-export-all", Desc="HMI 全快照(画面+模板+变量表+连接+列表)到目录", Req=new[]{"outDir"},
                 P=new Dictionary<string,string>{ ["outDir"]="输出目录(必填)" } },
+            new ToolDef{ Name="hmi-find-unused-tags", Desc="HMI 死代码候选:声明了但未被任何画面/模板引用的变量(扫画面+模板,不扫报警/调度器/多路复用;未引用!=可安全删,删前博图复核)" },
+            new ToolDef{ Name="hmi-tag-usage", Desc="单 HMI 变量反查:被哪些画面/模板/控件引用(对标 PLC where-used;扫画面+模板,不扫报警/调度器)", Req=new[]{"tagName"},
+                P=new Dictionary<string,string>{ ["tagName"]="HMI 变量名(精确名,大小写不敏感;查准名用 hmi-read-tags)" } },
             // HMI 写
             new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]([]内可省)。inline 文本", ["dry-run"]="true=只预览、不实际写" } },

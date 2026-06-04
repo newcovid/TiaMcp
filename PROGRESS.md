@@ -28,10 +28,11 @@
 | 4 | 图形块"写"✅ ｜ PLC侧批量✅ ｜ **HMI 探针✅ + 2a读✅ + 2b写✅** | ✅ |
 | 5 | **打包成 MCP(stdio) 接入 Claude Code** | ✅ |
 
-## 已实现命令（56）
+## 已实现命令（58）
 - **读取**：`list` `read-tags` `read-udts` `export-source` `export-xml` `export-udt` **`block-info`🆕** `hmi-probe`
 - **工程/硬件/库**🆕：`project-info` `device-list` `device-info [设备名]` `device-modules [设备名]` `device-network [设备名]`(子网/IoSystem/IP) `library-list`（项目库类型/母版 + 全局库枚举）（纯只读；device-modules 展开本地机架模块 + 分布式IO站模块树）
 - **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-templates`🆕** `hmi-read-connections` `hmi-export-all <目录>`(含模板)
+- **HMI 变量使用分析**🆕：**`hmi-find-unused-tags`**(声明变量 vs 画面/模板实际引用→列孤儿/HMI死代码候选) **`hmi-tag-usage <变量>`**(单变量反查被哪些画面/模板/控件引用,对标 PLC where-used)。扫画面+模板,**不扫报警/调度器/多路复用→未引用≠可安全删,删前博图复核**
 - **HMI 写**：`hmi-write-tags` `hmi-delete-tags` `hmi-export-screen` `hmi-import-screen` `hmi-delete-screen`（全带 `--dry-run`）
 - **HMI 模板(母版)**🆕：`hmi-export-template <名> <目录>` `hmi-import-template <xml>[--dry-run]` `hmi-delete-template <名>[--dry-run]`
 - **HMI 列表**🆕：`hmi-import-list <xml>[--text|--graphic][--dry-run]` `hmi-delete-list <名>[--text|--graphic][--dry-run]`（读/导出已在 hmi-export-all）
@@ -67,6 +68,11 @@
 - [x] `hmi-read-connections`：连接名（经典 Connection 仅暴露 Name）。
 - [x] `hmi-export-all <目录>`：画面+变量表+连接+列表全快照。实跑落 44+2+1+5=52 个明文XML。
 - **实测钉死的事实**（见 memory hmi-probe-results）：① **两套 API**——经典 `HmiTarget`(本机用)vs Unified `HmiSoftware`(.DataType 等，对 Basic 不适用)；② 经典 Screen/Connection/Tag 对象**只暴露 Name 属性**，详情全在导出 XML；③ 变量 XML：`<Hmi.Tag.Tag>` 无 DataType 元素，类型看 `<Coding>`(IEEE754Float=Real)，PLC 绑定在 `<LinkList><ControllerTag>`；④ 画面 XML：`Hmi.Screen.*` 控件，绑定变量在含 "Tag" 且带 `<Name>` 的子节点。
+### 2d 变量使用分析（spec/计划 2026-06-04-hmi-tag-usage-*，分支 feat/hmi-tag-usage）— 编译通过，**实跑待用户在 TIA 机器复核**
+- [ ] `hmi-find-unused-tags`：声明变量全集(解析变量表XML) vs 画面+模板实际引用(`BuildTagUsageIndex` 一次性导出全部画面/模板→`CollectTagRefs` 收集全部含"Tag"+`<Name>`引用并归属最近 `Hmi.Screen.*` 祖先对象)→列孤儿。摘要打头+孤儿清单内联，全量"变量→引用画面"映射 >8KB 写 %TEMP%。
+- [ ] `hmi-tag-usage <变量>`：单变量反查引用它的(画面/模板,控件类型,控件名)，回显绑定的 PLC 变量，给在用/孤儿状态；变量找不到提示用 hmi-read-tags 查准名。
+- **解决的体验缺口**：`hmi-read-tags` 只到变量表层(建了没摆上画面的孤儿照样列)；这两条从**画面层**下结论，便于查 HMI 死代码/重构前查影响面。
+- **诚实边界(写进工具说明+输出)**：经典 `HmiTarget` 不暴露报警/调度器/多路复用消费者→「未被画面引用」≠「可安全删」，孤儿列表必带 ⚠ 删前博图确认。检测口径=结构化 XML 解析(非文本子串扫描,避免中文文本标签误判成"在用")。
 ### 2b 写子系统（spec/计划 2026-06-03-hmi-write-commands-*，分支 feat/hmi-write-commands）— ✅ 全部实跑
 - [x] `hmi-write-tags <清单>[--dry-run]`：克隆模板建/改符号绑定变量。实跑建 MCP_Test_HMITag 绑 BatteryDataBlock.TotalVoltage，类型Real正确继承，562→563现有不丢。
 - [x] `hmi-delete-tags <清单>[--dry-run]`：API 删；删回测试变量(563→562)；dry-run 删真实变量验证不动工程。
