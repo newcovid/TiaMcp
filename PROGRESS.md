@@ -4,7 +4,7 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`）
+最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`）
 
 ## 阶段状态
 | 阶段 | 内容 | 状态 |
@@ -17,7 +17,7 @@
 | 4 | 图形块"写"✅ ｜ PLC侧批量✅ ｜ **HMI 探针✅ + 2a读✅ + 2b写✅** | ✅ |
 | 5 | **打包成 MCP(stdio) 接入 Claude Code** | ✅ |
 
-## 已实现命令（54）
+## 已实现命令（56）
 - **读取**：`list` `read-tags` `read-udts` `export-source` `export-xml` `export-udt` **`block-info`🆕** `hmi-probe`
 - **工程/硬件/库**🆕：`project-info` `device-list` `device-info [设备名]` `device-modules [设备名]` `device-network [设备名]`(子网/IoSystem/IP) `library-list`（项目库类型/母版 + 全局库枚举）（纯只读；device-modules 展开本地机架模块 + 分布式IO站模块树）
 - **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-templates`🆕** `hmi-read-connections` `hmi-export-all <目录>`(含模板)
@@ -26,6 +26,7 @@
 - **HMI 列表**🆕：`hmi-import-list <xml>[--text|--graphic][--dry-run]` `hmi-delete-list <名>[--text|--graphic][--dry-run]`（读/导出已在 hmi-export-all）
 - **排查**：`where-used` `block-deps` `find-unused` `call-tree` `callers-tree` **`crossref-report`🆕**(全项目交叉引用Markdown报表)
 - **写入/重构**：`import-scl` `import-xml` `import-udt` `write-tags` **`delete-tags`/`edit-tags`🆕**(删/改PLC变量) `delete-block`(`--dry-run`/`--force`+删前查引用) **`rename-block`🆕**(引用影响告警) **`set-block-number`🆕**(`--dry-run`)
+- **know-how 保护**🆕：**`unlock-block [块,逗号分隔] --password<pwd>[--dry-run]`**(移除保护;省略块名=对全部受保护块逐个试该密码,密码不符跳过) **`lock-block <块,逗号分隔> --password<pwd>[--dry-run]`**(设置保护)。官方 `PlcBlockProtectionProvider.Unprotect/Protect`;密码绝不落盘(MCP 仅记 argv[0]+参数个数)
 - **编译/批量/工程**：`compile` `compile-device` `export-all` **`project-save`🆕** **`project-archive`🆕**(归档.zapXX,需先save) **`export-project-texts`/`import-project-texts`🆕**(注释xlsx批改) **`export-watchtable`🆕**(监控/强制表)
 
 ## 指令集审计（2026-06-04，详见 docs/AUDIT-2026-06-04.md + docs/COMMAND-MANUAL.md）
@@ -95,7 +96,8 @@
 - 框架 net48 + x64；MCP 层手写 stdio JSON-RPC（不引官方 SDK）；JSON 用 Newtonsoft（打包时引）。
 - **E-SafeNet**：所有 TIA 文件 I/O 经 `%TEMP%` 中转 + 明文校验 + 即用即删；不信任持久化明文。
 - **图形块**：不精修 SimaticML，只整块替换(import-xml)或重写为 SCL；**CEM 不做**。
-- **know-how 保护块**：不自动解密，需手动在博图解锁；工具自动识别并单列。
+- **know-how 保护块**：工具自动识别并单列；**博图里双击+输密码=临时打开≠取消保护,Openness 仍读不到**（IsKnowHowProtected 不变）。要读须真正移除保护：`unlock-block`(Openness Unprotect,需密码) 或博图取消保护；读完用 `lock-block`(Protect) 复原。不做自动解密(密码每次显式传、绝不存储)。
 
 ## 已知受保护块（目标工程，读不了内部）
 PID_S、PID_Control、PN_SEW_Speed_Control、PN_SEW_Speed_Control_1、PID_Control_DB。
+（现可用 `unlock-block <块> --password <pwd>` 移除保护后读取——前提是有该块密码；PN_SEW_*/PID_* 若为厂商库块无密码则 Unprotect 报"密码不符"，仍读不了。）

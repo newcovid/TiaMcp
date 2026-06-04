@@ -659,6 +659,27 @@
 - **用途**：改块号（关 `AutoNumber` 再设 `Number`）。号被占用会拒绝；know-how 块拒绝。
 - **输出示例**：`块 FB_Ramp 块号 7 -> 999  [DRY-RUN 预演]` / `（预演，未改）`。退出码：0/1/2。
 
+### `unlock-block [块名,逗号分隔] --password <pwd> [--dry-run]` 🆕
+- **用途**：移除块的 know-how(专有技术)保护（Openness `PlcBlockProtectionProvider.Unprotect(SecureString)`，手册 §5.11 p567 / §6.4.2.4 p1499）。**解锁后 `export-source`/`export-xml` 才出完整代码**（否则只出公共接口）。
+- **关键事实**：博图里"双击块+输密码"只是 GUI 编辑器会话内**临时打开**，`IsKnowHowProtected` 仍为 true，Openness/MCP **仍读不到**——必须本命令或博图"取消保护"才真正移除。
+- **输入**：块名（逗号分隔多个）**可省略**——省略=对项目内全部受保护块逐个尝试该密码（密码不符的跳过，支持多块不同密码：换密码再调一次）。`--password` 必填（dry-run 预览可不填）。
+- **输出示例**：
+  ```
+  [OK] FB_Secret 已解锁
+  [跳过] PN_SEW_Speed_Control：密码不符
+  [不可用] FC_Raw：服务不可用（需先编译/非代码块或全局DB/在线/不支持）
+  小结：解锁 1 / 密码不符 1 / 已无保护 0 / 不可用 1 / 失败 0
+  提示：解锁是内存改动，未落盘。读完用 lock-block 重新加锁；要持久化另调 project-save…
+  ```
+- **退出码**：0=全成功/无目标；2=有"密码不符"或失败；1=参数错（非 dry-run 缺密码）。
+- **MCP 备注**：`blockNames`(可选)/`password`(值参,必填)/`dry-run`(旗标)。密码**绝不**写日志/stderr/临时文件（MCP 仅记 `argv[0]`+参数个数）；MCP 路径 argv 进程内组装，不进 OS 进程列表。
+
+### `lock-block <块名,逗号分隔> --password <pwd> [--dry-run]` 🆕
+- **用途**：给块设置 know-how 保护（Openness `Protect(SecureString)`）。配合 `unlock-block` 做"解锁→读→复原"。块名**必填**（只按显式块名，防误锁本无保护的块）。
+- **输入**：块名（逗号分隔多个，必填）；`--password` 必填（dry-run 可不填）。
+- **输出示例**：`[OK] FB_Secret 已加锁` / `[跳过] FB_X：已受保护` / `小结：加锁 1 / 已受保护 0 / 不可用 0 / 失败 0`。退出码 0/1/2。
+- **MCP 备注**：内存改动不落盘，要持久化用 `project-save`（会连同博图手改一并落盘）。密码同样绝不存储。
+
 ### `edit-tags <清单文件> [--dry-run]`
 - **用途**：改已有 PLC 变量的类型/地址。行 `表名|变量名|新类型|新地址`（空列=不改该项）。
 - **输出示例**：`[改] DI/Tag_Example -> 类型=Bool 地址=(不变)` … `汇总: 改 1 / 跳 0`。逐条非致命（`[跳]`/`[错]`）。
