@@ -1,0 +1,375 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Xml.Linq;
+using Siemens.Engineering;             // ExportOptions
+using Siemens.Engineering.Hmi.Screen;  // Screen, ScreenSystemFolder, ScreenUserFolder
+using Siemens.Engineering.Hmi.Tag;     // TagTable, TagSystemFolder, TagUserFolder, Tag
+using Siemens.Engineering.Hmi.Communication; // Connection
+using Siemens.Engineering.Hmi.TextGraphicList; // TextList, GraphicList
+using HmiTarget = Siemens.Engineering.Hmi.HmiTarget;
+
+namespace TiaMcp
+{
+    /// <summary>
+    /// HMI 读命令集(经典 HmiTarget,非 Unified HmiSoftware)。只读 + 导出。
+    /// 全程沿用铁律:只读、逐项 try/catch、导出经 %TEMP%、结果走 stdout、诊断走 stderr。
+    /// </summary>
+    internal static class HmiReads
+    {
+        // ===== hmi-list:设备 + 计数 + 名字地图 =====
+        public static int HmiList()
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+
+                foreach (var kv in hmis)
+                {
+                    HmiTarget hmi = kv.Value;
+                    var screens = new List<Screen>(); CollectScreens(hmi.ScreenFolder, screens);
+                    var tables = new List<TagTable>(); CollectTagTables(hmi.TagFolder, tables);
+                    int tagCount = tables.Sum(t => CountTags(t));
+                    int connCount = 0; foreach (Connection c in hmi.Connections) connCount++;
+
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} ====");
+                    Console.WriteLine($"  画面 {screens.Count} | 变量表 {tables.Count} | 变量 {tagCount} | 连接 {connCount}");
+                    Console.WriteLine("  变量表: " + string.Join(", ", tables.Select(t => t.Name)));
+                    Console.WriteLine("  画面: " + string.Join(", ", screens.Select(x => x.Name)));
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+
+        private static int CountTags(TagTable t)
+        {
+            int n = 0; foreach (Tag tag in t.Tags) n++; return n;
+        }
+
+        // ===== 共享遍历 =====
+        private static void CollectScreens(ScreenSystemFolder root, List<Screen> acc)
+        {
+            foreach (Screen sc in root.Screens) acc.Add(sc);
+            foreach (ScreenUserFolder f in root.Folders) CollectScreensU(f, acc);
+        }
+        private static void CollectScreensU(ScreenUserFolder folder, List<Screen> acc)
+        {
+            foreach (Screen sc in folder.Screens) acc.Add(sc);
+            foreach (ScreenUserFolder f in folder.Folders) CollectScreensU(f, acc);
+        }
+        private static void CollectTagTables(TagSystemFolder root, List<TagTable> acc)
+        {
+            foreach (TagTable t in root.TagTables) acc.Add(t);
+            foreach (TagUserFolder f in root.Folders) CollectTagTablesU(f, acc);
+        }
+        private static void CollectTagTablesU(TagUserFolder folder, List<TagTable> acc)
+        {
+            foreach (TagTable t in folder.TagTables) acc.Add(t);
+            foreach (TagUserFolder f in folder.Folders) CollectTagTablesU(f, acc);
+        }
+
+        // ===== hmi-read-screens:画面文件夹树 =====
+        public static int HmiReadScreens()
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} · 画面树 ====");
+                    // 经典 Screen 只暴露 Name 属性，画面号只在导出 XML 里，故树只列名字
+                    PrintScreenSysFolder(kv.Value.ScreenFolder, "");
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+        private static void PrintScreenSysFolder(ScreenSystemFolder root, string indent)
+        {
+            foreach (Screen sc in root.Screens)
+                Console.WriteLine($"{indent}  {Safe(() => sc.Name)}");
+            foreach (ScreenUserFolder f in root.Folders)
+            {
+                Console.WriteLine($"{indent}[{f.Name}]");
+                PrintScreenUserFolder(f, indent + "  ");
+            }
+        }
+        private static void PrintScreenUserFolder(ScreenUserFolder folder, string indent)
+        {
+            foreach (Screen sc in folder.Screens)
+                Console.WriteLine($"{indent}  {Safe(() => sc.Name)}");
+            foreach (ScreenUserFolder f in folder.Folders)
+            {
+                Console.WriteLine($"{indent}[{f.Name}]");
+                PrintScreenUserFolder(f, indent + "  ");
+            }
+        }
+
+        // ===== hmi-read-templates: 模板画面(母版)树。模板=ScreenTemplateFolder，与普通画面分开存。 =====
+        public static int HmiReadTemplates()
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} · 模板画面(母版)树 ====");
+                    var templates = new List<ScreenTemplate>(); CollectTemplates(kv.Value.ScreenTemplateFolder, templates);
+                    foreach (var t in templates) Console.WriteLine($"  {Safe(() => t.Name)}");
+                    Console.WriteLine($"  共 {templates.Count} 个模板。（模板=页眉/页脚/永久区母版，被普通画面继承；详情/控件用 hmi-export-template 导 XML）");
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+        private static void CollectTemplates(ScreenTemplateSystemFolder root, List<ScreenTemplate> acc)
+        {
+            foreach (ScreenTemplate t in root.ScreenTemplates) acc.Add(t);
+            foreach (ScreenTemplateUserFolder f in root.Folders) CollectTemplatesU(f, acc);
+        }
+        private static void CollectTemplatesU(ScreenTemplateUserFolder folder, List<ScreenTemplate> acc)
+        {
+            foreach (ScreenTemplate t in folder.ScreenTemplates) acc.Add(t);
+            foreach (ScreenTemplateUserFolder f in folder.Folders) CollectTemplatesU(f, acc);
+        }
+
+        // ===== hmi-read-connections =====
+        public static int HmiReadConnections()
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} · 连接 ====");
+                    int n = 0;
+                    foreach (Connection c in kv.Value.Connections)
+                    {
+                        Console.WriteLine($"  {Safe(() => c.Name)}");
+                        n++;
+                    }
+                    Console.WriteLine($"  共 {n} 个连接。（经典 Connection 仅暴露 Name；伙伴/驱动详情见 hmi-export-all 的连接 XML）");
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+
+        // ===== hmi-read-tags [--table 名] [--filter 子串] =====
+        // 经典 Tag 只暴露 Name 属性，数据类型/连接/地址只在 TagTable.Export 的 XML 里，故导出+解析。
+        public static int HmiReadTags(string tableFilter, string nameFilter)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    Console.WriteLine($"==== HMI 设备: {kv.Key} · 变量 ====");
+                    var tables = new List<TagTable>(); CollectTagTables(kv.Value.TagFolder, tables);
+                    int shown = 0;
+                    foreach (TagTable t in tables)
+                    {
+                        if (tableFilter != null && t.Name.IndexOf(tableFilter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        Console.WriteLine($"  [表] {t.Name}");
+                        string tmp = IoUtil.NewTempFile(".xml");
+                        try
+                        {
+                            if (File.Exists(tmp)) File.Delete(tmp);
+                            t.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
+                            string xml = IoUtil.ReadPlaintext(tmp);
+                            shown += PrintTagsFromXml(xml, nameFilter);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("    [表导出失败] " + ex.Message);
+                            Logger.Error("read-tags export " + t.Name, ex);
+                        }
+                        finally { try { File.Delete(tmp); } catch { } }
+                    }
+                    Console.WriteLine($"  -- 显示 {shown} 个变量 --");
+                    Console.WriteLine();
+                }
+                return 0;
+            }
+        }
+
+        // 解析变量表导出 XML 里的变量。变量元素=<Hmi.Tag.Tag>。
+        // 经典 HMI 无显式 DataType 元素:类型由 <Coding>(如 IEEE754Float=Real) 表示;
+        // LinkList 下 <Connection> 是 HMI 连接、<ControllerTag> 是绑定的 PLC 变量。
+        private static int PrintTagsFromXml(string xml, string nameFilter)
+        {
+            var doc = XDocument.Parse(xml);
+            var tagEls = doc.Descendants().Where(e => e.Name.LocalName == "Hmi.Tag.Tag").ToList();
+            int shown = 0;
+            foreach (var te in tagEls)
+            {
+                string name = ChildText(te, "Name") ?? "";
+                if (nameFilter != null && name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                string coding = ChildText(te, "Coding") ?? "?";       // 编码≈类型:IEEE754Float=Real 等
+                string conn = LinkName(te, "Connection") ?? "-";
+                string plc = LinkName(te, "ControllerTag") ?? "-";     // 绑定的 PLC 变量
+                Console.WriteLine($"      {name,-38} {coding,-14} conn={conn,-10} ←PLC {plc}");
+                shown++;
+            }
+            return shown;
+        }
+
+        // 取 <Hmi.Tag.Tag> 下某 LinkList 子节点(Connection/ControllerTag) 的 Name
+        private static string LinkName(XElement tagEl, string linkLocalName)
+        {
+            var el = tagEl.Descendants().FirstOrDefault(x => x.Name.LocalName == linkLocalName);
+            return el != null ? ChildText(el, "Name") : null;
+        }
+
+        // 取某元素下第一个 local-name==key 的后代文本(非空)
+        private static string ChildText(XElement e, string key)
+        {
+            var c = e.Descendants().FirstOrDefault(x => x.Name.LocalName == key && !string.IsNullOrWhiteSpace(x.Value));
+            return c != null ? c.Value.Trim() : null;
+        }
+
+        // ===== hmi-read-screen <名>:单张画面控件摘要 + 可识别的绑定变量 =====
+        public static int HmiReadScreen(string screenName)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    var screens = new List<Screen>(); CollectScreens(kv.Value.ScreenFolder, screens);
+                    Screen target = screens.FirstOrDefault(x => string.Equals(x.Name, screenName, StringComparison.OrdinalIgnoreCase));
+                    if (target == null) continue;
+
+                    Console.WriteLine($"==== {kv.Key} · 画面 {target.Name} ====");
+                    string tmp = IoUtil.NewTempFile(".xml");
+                    try
+                    {
+                        if (File.Exists(tmp)) File.Delete(tmp);
+                        target.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
+                        string xml = IoUtil.ReadPlaintext(tmp);
+                        PrintScreenObjects(xml);
+                    }
+                    finally { try { File.Delete(tmp); } catch { } }
+                    return 0;
+                }
+                Console.WriteLine($"找不到画面: {screenName}");
+                return 1;
+            }
+        }
+
+        private static void PrintScreenObjects(string xml)
+        {
+            var doc = XDocument.Parse(xml);
+            var objs = doc.Descendants()
+                          .Where(e => e.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)
+                                      && e.Name.LocalName != "Hmi.Screen.Screen")
+                          .ToList();
+            Console.WriteLine($"  画面对象 {objs.Count} 个:");
+            bool diagDumped = false;
+            foreach (var o in objs)
+            {
+                string type = o.Name.LocalName.Replace("Hmi.Screen.", "");
+                string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "";
+                string tagRef = FindTagRef(o);
+                string bind = tagRef != null ? "  →变量 " + tagRef : "";
+                Console.WriteLine($"    {type,-26} {oname,-24}{bind}");
+                if (!diagDumped && tagRef == null)
+                {
+                    string xmlText = o.ToString();
+                    Console.Error.WriteLine("[diag] 对象结构样例(" + type + "):\n" + xmlText.Substring(0, Math.Min(700, xmlText.Length)));
+                    diagDumped = true;
+                }
+            }
+        }
+
+        // 找绑定变量:后代里 local-name 含 "Tag" 且带 <Name> 子节点的元素，取其 Name(避免拼上兄弟布尔值)。
+        private static string FindTagRef(XElement e)
+        {
+            var tagEl = e.Descendants().FirstOrDefault(x => x.Name.LocalName.IndexOf("Tag", StringComparison.OrdinalIgnoreCase) >= 0
+                                                            && x.Elements().Any(c => c.Name.LocalName == "Name"));
+            return tagEl != null ? ChildText(tagEl, "Name") : null;
+        }
+
+        // ===== hmi-export-all <目录>:画面+变量表+连接+文本/图形列表 各导 XML 进目录 =====
+        public static int HmiExportAll(string outDir)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                Directory.CreateDirectory(outDir);
+
+                foreach (var kv in hmis)
+                {
+                    HmiTarget hmi = kv.Value;
+                    string baseDir = Path.Combine(outDir, MakeSafe(kv.Key));
+                    int okScreen = 0, okTemplate = 0, okTable = 0, okConn = 0, okList = 0, skip = 0;
+
+                    var screens = new List<Screen>(); CollectScreens(hmi.ScreenFolder, screens);
+                    foreach (Screen sc in screens)
+                        if (TryExport(fi => sc.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Screens", MakeSafe(sc.Name) + ".xml"))) okScreen++; else skip++;
+
+                    var templates = new List<ScreenTemplate>(); CollectTemplates(hmi.ScreenTemplateFolder, templates);
+                    foreach (ScreenTemplate t in templates)
+                        if (TryExport(fi => t.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Templates", MakeSafe(t.Name) + ".xml"))) okTemplate++; else skip++;
+
+                    var tables = new List<TagTable>(); CollectTagTables(hmi.TagFolder, tables);
+                    foreach (TagTable t in tables)
+                        if (TryExport(fi => t.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Tags", MakeSafe(t.Name) + ".xml"))) okTable++; else skip++;
+
+                    foreach (Connection c in hmi.Connections)
+                        if (TryExport(fi => c.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Connections", MakeSafe(c.Name) + ".xml"))) okConn++;
+                        else { skip++; Console.WriteLine($"  跳过连接 {Safe(() => c.Name)}（集成连接不支持导出）。"); }
+
+                    foreach (TextList tl in hmi.TextLists)
+                        if (TryExport(fi => tl.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Lists", "Text_" + MakeSafe(tl.Name) + ".xml"))) okList++; else skip++;
+                    foreach (GraphicList gl in hmi.GraphicLists)
+                        if (TryExport(fi => gl.Export(fi, ExportOptions.WithDefaults), Path.Combine(baseDir, "Lists", "Graphic_" + MakeSafe(gl.Name) + ".xml"))) okList++; else skip++;
+
+                    Console.WriteLine($"==== {kv.Key}: 画面 {okScreen} / 模板 {okTemplate} / 变量表 {okTable} / 连接 {okConn} / 列表 {okList}；跳过 {skip} ====");
+                }
+                Console.WriteLine($"导出完成 -> {Path.GetFullPath(outDir)}");
+                Console.WriteLine("注意：本机全盘扫描可能稍后加密这些文件，请尽快 git add/commit。");
+                return 0;
+            }
+        }
+
+        // 导出经 %TEMP%(校验明文)再写明文到目标;失败返回 false
+        private static bool TryExport(Action<FileInfo> exportFn, string targetPath)
+        {
+            string tmp = IoUtil.NewTempFile(".xml");
+            try
+            {
+                if (File.Exists(tmp)) File.Delete(tmp);
+                exportFn(new FileInfo(tmp));
+                string xml = IoUtil.ReadPlaintext(tmp);
+                Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
+                File.WriteAllText(targetPath, xml, new System.Text.UTF8Encoding(false));
+                return true;
+            }
+            catch (Exception ex) { Logger.Error("导出失败 " + targetPath, ex); return false; }
+            finally { try { File.Delete(tmp); } catch { } }
+        }
+
+        private static string MakeSafe(string name)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            return name;
+        }
+
+        // [接入点-后续方法]
+
+        private static string Safe(Func<object> f)
+        {
+            try { return f()?.ToString() ?? ""; } catch { return "?"; }
+        }
+    }
+}

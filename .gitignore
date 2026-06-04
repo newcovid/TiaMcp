@@ -1,0 +1,28 @@
+# 构建产物
+bin/
+obj/
+
+# 日志(运行期生成)
+logs/
+*.log
+
+# Visual Studio / Rider
+.vs/
+*.user
+*.suo
+*.userprefs
+
+# Claude Code 本地工具/工作流脚本(一次性分析产物,非产品代码)
+.claude/
+
+# 审计临时文件
+.audit-*
+
+# 内部开发规划/spec 文档(含用户名路径+测试项目数据,本地保留不入库)
+docs/superpowers/
+
+# 临时文件(E-SafeNet 中转走 %TEMP%,不应入库,但以防万一)
+*.tmp
+
+# 官方参考 PDF(大二进制 + 西门子版权,本地参考用,不入库)
+docs/reference/*.pdf

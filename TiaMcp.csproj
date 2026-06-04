@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 控制台 exe -->
+    <OutputType>Exe</OutputType>
+
+    <!-- 阶段0决策：必须 .NET Framework 4.8，因为 Openness 程序集跑在 .NET Framework 上 -->
+    <TargetFramework>net48</TargetFramework>
+
+    <!-- 阶段0决策：必须 x64（TIA 是 64 位）。绝不能用 AnyCPU/x86，否则加载 Openness 时 BadImageFormatException -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+
+    <AssemblyName>TiaMcp</AssemblyName>
+    <RootNamespace>TiaMcp</RootNamespace>
+    <Nullable>disable</Nullable>
+
+    <!-- net48 默认 C# 7.3，本项目用到的元组/模式匹配都在范围内，无需提升 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 阶段5 MCP：JSON 用 .NET Framework 自带的 System.Web.Extensions(JavaScriptSerializer)，
+         零 NuGet 依赖、自包含，方便上传 GitHub 后他人直接编译。 -->
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      引用 Openness 主程序集。
+      HintPath：阶段0实测路径（你的 TIA 装在 D 盘）。
+      Private=false（CopyLocal=false）：不把这个 DLL 拷到输出目录；
+      运行时由 OpennessAssemblyResolver 从 PublicAPI\V18 加载。
+    -->
+    <Reference Include="Siemens.Engineering">
+      <HintPath>D:\Program Files\Siemens\Automation\Portal V18\PublicAPI\V18\Siemens.Engineering.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- HMI 类型在独立 DLL 里（Siemens.Engineering.Hmi.dll），同样运行时从 PublicAPI\V18 加载 -->
+    <Reference Include="Siemens.Engineering.Hmi">
+      <HintPath>D:\Program Files\Siemens\Automation\Portal V18\PublicAPI\V18\Siemens.Engineering.Hmi.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
