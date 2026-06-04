@@ -159,14 +159,21 @@ namespace TiaMcp
         {
             var props = new Dictionary<string, object>();
             var required = new List<string>();
-            if (t.TextParam != null) { props[t.TextParam] = StrProp("inline 文本内容（直接传文本，工具内部经 %TEMP% 中转，勿传磁盘路径）"); required.Add(t.TextParam); }
-            foreach (var r in t.Req) { props[r] = StrProp(r); required.Add(r); }
-            foreach (var op in t.Opt) props[op] = StrProp(op + "（可选）");
-            foreach (var vf in t.ValueFlags) props[vf] = StrProp(vf + "（可选筛选子串）");
-            foreach (var f in t.Flags) props[f] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = f };
+            if (t.TextParam != null) { props[t.TextParam] = StrProp(PDesc(t, t.TextParam, "inline 文本内容（直接传文本，工具内部经 %TEMP% 中转，勿传磁盘路径）")); required.Add(t.TextParam); }
+            foreach (var r in t.Req) { props[r] = StrProp(PDesc(t, r, r)); required.Add(r); }
+            foreach (var op in t.Opt) props[op] = StrProp(PDesc(t, op, op + "（可选）"));
+            foreach (var vf in t.ValueFlags) props[vf] = StrProp(PDesc(t, vf, vf + "（可选）"));
+            foreach (var f in t.Flags) props[f] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = PDesc(t, f, f) };
             var s = new Dictionary<string, object> { ["type"] = "object", ["properties"] = props };
             if (required.Count > 0) s["required"] = required.ToArray();
             return s;
+        }
+
+        // 参数/旗标描述：优先取 ToolDef.P 登记的，缺省回退（默认仅为参数名，故 P 是 AI 正确选参的关键）
+        private static string PDesc(ToolDef t, string key, string fallback)
+        {
+            string d;
+            return (t.P != null && t.P.TryGetValue(key, out d)) ? d : fallback;
         }
 
         private static Dictionary<string, object> StrProp(string desc) =>
@@ -209,72 +216,113 @@ namespace TiaMcp
             public string[] ValueFlags = new string[0]; // 带值旗标 -> --name value
             public string TextParam;                    // inline 文本入参名（写临时文件，路径作首个位置参）
             public string TextExt = ".txt";
+            public Dictionary<string, string> P = new Dictionary<string, string>(); // 参数/旗标名->描述（覆盖 Schema 默认；零上下文 AI 选参填参的关键）
         }
 
         // ===================== 54 工具登记表 =====================
         private static readonly ToolDef[] Tools = new[]
         {
             // 读取
-            new ToolDef{ Name="list", Desc="列出所有 PLC 及全部块(类型/名称/语言/路径/受保护标记)" },
-            new ToolDef{ Name="read-tags", Desc="列出 PLC 变量表与变量(名/类型/地址/中文注释)" },
+            new ToolDef{ Name="list", Desc="列出所有 PLC 及全部块(类型/名称/语言/路径/受保护标记)。只列 PLC 程序块;要设备清单用 device-list,要 HMI 用 hmi-list" },
+            new ToolDef{ Name="read-tags", Desc="列出 PLC 变量表与变量(名/类型/地址/中文注释)。仅离线组态值:Openness 无在线实际值/强制值,也不读 DB 成员当前值" },
             new ToolDef{ Name="read-udts", Desc="列出所有 UDT 自定义类型名" },
-            new ToolDef{ Name="export-source", Desc="导出 SCL/STL 块源码文本(图形块改用 export-xml)", Req=new[]{"blockName"}, Opt=new[]{"outDir"} },
-            new ToolDef{ Name="export-xml", Desc="导出任意块(含图形块/DB)为 SimaticML XML;体积可大", Req=new[]{"blockName"}, Opt=new[]{"outDir"} },
-            new ToolDef{ Name="export-udt", Desc="导出一个 UDT 的完整成员定义文本", Req=new[]{"udtName"}, Opt=new[]{"outDir"} },
-            new ToolDef{ Name="block-info", Desc="读块元数据(块号/语言/布局/一致性/作者/版本/日期)", Req=new[]{"blockName"} },
-            new ToolDef{ Name="hmi-probe", Desc="只读探测 HMI(画面/变量/连接);输出大,日常优先用 hmi-list", Flags=new[]{"no-screen-export"} },
+            new ToolDef{ Name="export-source", Desc="导出 SCL/STL 块源码文本(图形块改用 export-xml)。源码直接随结果返回,无需另存", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["blockName"]="要导出的块名(大小写不敏感)", ["outDir"]="可选;源码已随结果返回,仅当需要额外磁盘明文副本时给目录(注意落盘明文可能被本机 E-SafeNet 加密)" } },
+            new ToolDef{ Name="export-xml", Desc="导出任意块(含图形块/DB)为 SimaticML XML;体积可大,XML 已随结果返回。AI 整块改 LAD/FBD 必须先用它拿完整 XML", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["blockName"]="要导出的块名(大小写不敏感)", ["outDir"]="可选;XML 已随结果返回,仅需磁盘副本时给目录(落盘明文可能被加密)" } },
+            new ToolDef{ Name="export-udt", Desc="导出一个 UDT 的完整成员定义文本(已随结果返回)", Req=new[]{"udtName"}, Opt=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["udtName"]="要导出的 UDT 名", ["outDir"]="可选;定义已随结果返回,仅需磁盘副本时给目录" } },
+            new ToolDef{ Name="block-info", Desc="读块元数据(块号/语言/布局/一致性/作者/版本/日期)", Req=new[]{"blockName"},
+                P=new Dictionary<string,string>{ ["blockName"]="要查元数据的块名" } },
+            new ToolDef{ Name="hmi-probe", Desc="只读探测 HMI(画面/变量/连接);输出极大,日常优先用 hmi-list,要落盘快照用 hmi-export-all", Flags=new[]{"no-screen-export"},
+                P=new Dictionary<string,string>{ ["no-screen-export"]="true=跳过画面 XML 导出以大幅减小输出体积" } },
             // 硬件/库
-            new ToolDef{ Name="device-list", Desc="项目所有设备+类型(PLC/HMI/其他)+型号/订货号(分布式IO站带GSD标记)" },
-            new ToolDef{ Name="device-info", Desc="设备型号/订货号/固件/作者(CPU与各模块)", Opt=new[]{"deviceName"} },
-            new ToolDef{ Name="device-modules", Desc="机架/槽位/模块树(本地中央机架 + 分布式IO站模块)", Opt=new[]{"deviceName"} },
-            new ToolDef{ Name="device-network", Desc="子网/IoSystem 拓扑 + 各网络接口 IP/PN名", Opt=new[]{"deviceName"} },
+            new ToolDef{ Name="device-list", Desc="项目所有设备的全局一览(一行一设备:类型 PLC/HMI/其他 + 型号/订货号,分布式IO站带GSD标记)。要单设备详情用 device-info" },
+            new ToolDef{ Name="device-info", Desc="单设备详情:型号/订货号/固件/作者(CPU与各模块)", Opt=new[]{"deviceName"},
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备(已在 diagnostics 标注)" } },
+            new ToolDef{ Name="device-modules", Desc="机架/槽位/模块树(本地中央机架 + 分布式IO站模块)", Opt=new[]{"deviceName"},
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备" } },
+            new ToolDef{ Name="device-network", Desc="子网/IoSystem 拓扑 + 各网络接口 IP/PN名。均为离线组态值;Openness 不能在线分配/读取实际 IP", Opt=new[]{"deviceName"},
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备" } },
             new ToolDef{ Name="library-list", Desc="项目库类型/母版副本 + 全局库枚举" },
             // 排查
-            new ToolDef{ Name="where-used", Desc="谁引用了该符号(块/DB/变量/UDT,支持 DB.成员)", Req=new[]{"symbol"} },
-            new ToolDef{ Name="block-deps", Desc="某块依赖了哪些符号(向下引用)", Req=new[]{"blockName"} },
+            new ToolDef{ Name="where-used", Desc="谁引用了该符号(单跳、任意符号:块/DB/变量/UDT,支持 DB.成员)。要递归的块级被调树用 callers-tree", Req=new[]{"symbol"},
+                P=new Dictionary<string,string>{ ["symbol"]="符号名;块/DB/变量/UDT 均可,DB 成员写 DB.成员" } },
+            new ToolDef{ Name="block-deps", Desc="某块直接依赖的符号(单跳、向下、列出全部被引用符号)。要递归块树用 call-tree", Req=new[]{"blockName"},
+                P=new Dictionary<string,string>{ ["blockName"]="要分析依赖的块名" } },
             new ToolDef{ Name="find-unused", Desc="无人引用的块/DB(死代码候选;删前务必复核)" },
-            new ToolDef{ Name="call-tree", Desc="某块向下调用树", Req=new[]{"blockName"} },
-            new ToolDef{ Name="callers-tree", Desc="某块被调用树(向上影响分析)", Req=new[]{"blockName"} },
+            new ToolDef{ Name="call-tree", Desc="某块的向下调用树(递归、仅块)。只要单跳全部依赖符号用 block-deps", Req=new[]{"blockName"},
+                P=new Dictionary<string,string>{ ["blockName"]="调用树根块名" } },
+            new ToolDef{ Name="callers-tree", Desc="某块的被调用树(递归、仅块、向上影响分析)。只要单跳引用者(含变量/DB)用 where-used", Req=new[]{"blockName"},
+                P=new Dictionary<string,string>{ ["blockName"]="被调树根块名" } },
             new ToolDef{ Name="crossref-report", Desc="全项目交叉引用 Markdown 报表(体积可大)" },
             // PLC 写/重构
-            new ToolDef{ Name="import-scl", Desc="导入 SCL 明文->生成块->自动编译报错", TextParam="sclText", TextExt=".scl" },
-            new ToolDef{ Name="import-xml", Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')", TextParam="xmlText", TextExt=".xml" },
-            new ToolDef{ Name="import-udt", Desc="从明文 .udt 生成/覆盖 UDT", TextParam="udtText", TextExt=".udt" },
-            new ToolDef{ Name="write-tags", Desc="批量建 PLC 变量;每行 表名|变量名|类型|地址(地址可空=符号变量)", TextParam="listText", TextExt=".txt" },
-            new ToolDef{ Name="delete-tags", Desc="删 PLC 变量;每行 表名|变量名 或 变量名", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="edit-tags", Desc="改 PLC 变量类型/地址;每行 表名|变量名|新类型|新地址(空=不改)", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="delete-block", Desc="删块(删前查引用,被引用需 force)", Req=new[]{"blockName"}, Flags=new[]{"dry-run","force"} },
-            new ToolDef{ Name="rename-block", Desc="改块名(Openness 改名不更新引用,会告警影响面)", Req=new[]{"oldName","newName"}, Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="set-block-number", Desc="改块号(号冲突会拒)", Req=new[]{"blockName","number"}, Flags=new[]{"dry-run"} },
+            new ToolDef{ Name="import-scl", Desc="导入 SCL 明文->生成块->自动编译报错。会覆盖同名块且无 dry-run,建议先 export-source 备份", TextParam="sclText", TextExt=".scl",
+                P=new Dictionary<string,string>{ ["sclText"]="SCL 源码明文(inline,勿传磁盘路径);含同名块将被覆盖" } },
+            new ToolDef{ Name="import-xml", Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')。Override 静默覆盖且无 dry-run,务必先 export-xml 备份", TextParam="xmlText", TextExt=".xml",
+                P=new Dictionary<string,string>{ ["xmlText"]="SimaticML XML 明文(inline,勿传路径);同名块将被 Override 整块覆盖" } },
+            new ToolDef{ Name="import-udt", Desc="从明文 .udt 生成/覆盖 UDT。会覆盖同名 UDT 且无 dry-run", TextParam="udtText", TextExt=".udt",
+                P=new Dictionary<string,string>{ ["udtText"]="UDT 定义明文(inline,勿传路径);同名 UDT 将被覆盖" } },
+            new ToolDef{ Name="write-tags", Desc="批量建 PLC 变量。无 dry-run", TextParam="listText", TextExt=".txt",
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|类型|地址(地址留空=符号变量)。inline 文本,勿传路径" } },
+            new ToolDef{ Name="delete-tags", Desc="删 PLC 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名 或 仅 变量名。inline 文本", ["dry-run"]="true=只预览将删哪些、不实际删(建议先跑)" } },
+            new ToolDef{ Name="edit-tags", Desc="改 PLC 变量类型/地址", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|新类型|新地址(留空=该项不改)。inline 文本", ["dry-run"]="true=只预览改动、不实际写" } },
+            new ToolDef{ Name="delete-block", Desc="删块(删前查引用,被引用需 force)", Req=new[]{"blockName"}, Flags=new[]{"dry-run","force"},
+                P=new Dictionary<string,string>{ ["blockName"]="要删的块名", ["dry-run"]="true=只预览(含引用检查)、不实际删", ["force"]="即使该块仍被引用也强制删(危险,会留下悬空引用)" } },
+            new ToolDef{ Name="rename-block", Desc="改块名(Openness 改名不更新引用,会告警影响面)", Req=new[]{"oldName","newName"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["oldName"]="现块名", ["newName"]="新块名", ["dry-run"]="true=只预览影响面、不实际改名" } },
+            new ToolDef{ Name="set-block-number", Desc="改块号(号冲突会拒)", Req=new[]{"blockName","number"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["blockName"]="块名", ["number"]="目标块号(整数;与现有块冲突会被拒)", ["dry-run"]="true=只预览、不实际改号" } },
             // 编译/工程
-            new ToolDef{ Name="compile", Desc="编译指定块,结构化返回 Error/Warning", Req=new[]{"blockName"} },
-            new ToolDef{ Name="compile-device", Desc="编译整个 PLC" },
-            new ToolDef{ Name="export-all", Desc="所有块导出明文(SCL/XML)到目录,给 Git", Req=new[]{"outDir"} },
-            new ToolDef{ Name="export-watchtable", Desc="导出监控表/强制表定义(非活值)到目录", Req=new[]{"outDir"} },
+            new ToolDef{ Name="compile", Desc="编译指定块,结构化返回 Error/Warning。仅离线编译;不下载到 PLC、不联机、不读诊断缓冲区", Req=new[]{"blockName"},
+                P=new Dictionary<string,string>{ ["blockName"]="要编译的块名" } },
+            new ToolDef{ Name="compile-device", Desc="编译整个 PLC,结构化返回 Error/Warning。仅离线编译;不下载到 PLC、不联机" },
+            new ToolDef{ Name="export-all", Desc="所有块导出明文(SCL/XML)到目录,给 Git", Req=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["outDir"]="输出目录(必填);落盘明文可能被 E-SafeNet 加密,尽快提交 Git/转存" } },
+            new ToolDef{ Name="export-watchtable", Desc="导出监控表/强制表定义(非活值)到目录", Req=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["outDir"]="输出目录(必填)" } },
             new ToolDef{ Name="project-info", Desc="项目元信息(名/作者/路径/版本/时间/注释/IsModified)" },
             new ToolDef{ Name="project-save", Desc="把 Openness 改动落盘(写命令闭环的关键)" },
-            new ToolDef{ Name="project-archive", Desc="归档项目为 .zapXX(需先 project-save)", Req=new[]{"outDir"}, Opt=new[]{"archiveName"} },
-            new ToolDef{ Name="export-project-texts", Desc="全工程注释/文本导出 xlsx 批改(默认语言 zh-CN)", Req=new[]{"outDir"}, Opt=new[]{"language"} },
-            new ToolDef{ Name="import-project-texts", Desc="把批改后的 xlsx 文本导回(传磁盘路径)", Req=new[]{"xlsxPath"} },
+            new ToolDef{ Name="project-archive", Desc="归档项目为 .zapXX(需先 project-save)", Req=new[]{"outDir"}, Opt=new[]{"archiveName"},
+                P=new Dictionary<string,string>{ ["outDir"]="归档输出目录(必填)", ["archiveName"]="可选;归档名,不传按项目名+时间自动取" } },
+            new ToolDef{ Name="export-project-texts", Desc="全工程注释/文本导出 xlsx 批改(默认语言 zh-CN)", Req=new[]{"outDir"}, Opt=new[]{"language"},
+                P=new Dictionary<string,string>{ ["outDir"]="xlsx 输出目录(必填)", ["language"]="可选;语言代码如 zh-CN(默认 zh-CN)" } },
+            new ToolDef{ Name="import-project-texts", Desc="把批改后的 xlsx 文本导回项目", Req=new[]{"xlsxPath"},
+                P=new Dictionary<string,string>{ ["xlsxPath"]="export-project-texts 产出并人工批改后的 xlsx 磁盘路径(本工具是唯一接磁盘路径、非 inline 的写工具)" } },
             // HMI 读
             new ToolDef{ Name="hmi-list", Desc="HMI 设备+画面/变量/连接计数+名字地图" },
-            new ToolDef{ Name="hmi-read-tags", Desc="HMI 变量(名/类型/连接/绑定的 PLC 变量)", ValueFlags=new[]{"table","filter"} },
+            new ToolDef{ Name="hmi-read-tags", Desc="HMI 变量(名/类型/连接/绑定的 PLC 变量)", ValueFlags=new[]{"table","filter"},
+                P=new Dictionary<string,string>{ ["table"]="可选;只读该变量表(精确表名,非子串)", ["filter"]="可选;变量名子串筛选" } },
             new ToolDef{ Name="hmi-read-screens", Desc="画面文件夹树" },
-            new ToolDef{ Name="hmi-read-screen", Desc="单画面控件 + 绑定变量", Req=new[]{"screenName"} },
+            new ToolDef{ Name="hmi-read-screen", Desc="单画面控件 + 绑定变量(输出可大)", Req=new[]{"screenName"},
+                P=new Dictionary<string,string>{ ["screenName"]="画面名" } },
             new ToolDef{ Name="hmi-read-templates", Desc="模板画面(母版)树" },
             new ToolDef{ Name="hmi-read-connections", Desc="HMI 连接名" },
-            new ToolDef{ Name="hmi-export-all", Desc="HMI 全快照(画面+模板+变量表+连接+列表)到目录", Req=new[]{"outDir"} },
+            new ToolDef{ Name="hmi-export-all", Desc="HMI 全快照(画面+模板+变量表+连接+列表)到目录", Req=new[]{"outDir"},
+                P=new Dictionary<string,string>{ ["outDir"]="输出目录(必填)" } },
             // HMI 写
-            new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量;行 表名|变量名|连接|PLC符号|[访问]|[注释]", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-delete-tags", Desc="删 HMI 变量;行 [表名|]变量名", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-export-screen", Desc="导出单画面 XML 供编辑", Req=new[]{"screenName","outDir"} },
-            new ToolDef{ Name="hmi-import-screen", Desc="整屏替换/新建(传 inline XML)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-delete-screen", Desc="删画面", Req=new[]{"screenName"}, Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-export-template", Desc="导出模板(母版) XML 供编辑", Req=new[]{"templateName","outDir"} },
-            new ToolDef{ Name="hmi-import-template", Desc="整模板替换/新建(传 inline XML);改母版影响所有继承画面", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-delete-template", Desc="删模板", Req=new[]{"templateName"}, Flags=new[]{"dry-run"} },
-            new ToolDef{ Name="hmi-import-list", Desc="导入文本/图形列表(传 inline XML;未指定 text/graphic 则按 XML 推断)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run","text","graphic"} },
-            new ToolDef{ Name="hmi-delete-list", Desc="删文本/图形列表", Req=new[]{"listName"}, Flags=new[]{"dry-run","text","graphic"} },
+            new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]([]内可省)。inline 文本", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-delete-tags", Desc="删 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["listText"]="每行: [表名|]变量名。inline 文本", ["dry-run"]="true=只预览、不实际删" } },
+            new ToolDef{ Name="hmi-export-screen", Desc="导出单画面 XML 供编辑", Req=new[]{"screenName","outDir"},
+                P=new Dictionary<string,string>{ ["screenName"]="画面名", ["outDir"]="输出目录(必填)" } },
+            new ToolDef{ Name="hmi-import-screen", Desc="整屏替换/新建(传 inline XML)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["xmlText"]="画面 SimaticML XML 明文(inline);同名画面整屏替换,否则新建", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-delete-screen", Desc="删画面", Req=new[]{"screenName"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["screenName"]="画面名", ["dry-run"]="true=只预览、不实际删" } },
+            new ToolDef{ Name="hmi-export-template", Desc="导出模板(母版) XML 供编辑", Req=new[]{"templateName","outDir"},
+                P=new Dictionary<string,string>{ ["templateName"]="模板(母版)名", ["outDir"]="输出目录(必填)" } },
+            new ToolDef{ Name="hmi-import-template", Desc="整模板替换/新建(传 inline XML);改母版影响所有继承画面", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["xmlText"]="模板 SimaticML XML 明文(inline);改母版会影响所有继承它的画面", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-delete-template", Desc="删模板", Req=new[]{"templateName"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["templateName"]="模板名", ["dry-run"]="true=只预览、不实际删" } },
+            new ToolDef{ Name="hmi-import-list", Desc="导入文本/图形列表(传 inline XML;未指定 text/graphic 则按 XML 推断)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run","text","graphic"},
+                P=new Dictionary<string,string>{ ["xmlText"]="文本/图形列表 SimaticML XML 明文(inline)", ["dry-run"]="true=只预览、不实际写", ["text"]="指定导入为文本列表", ["graphic"]="指定导入为图形列表(text/graphic 都不给则按 XML 自动推断)" } },
+            new ToolDef{ Name="hmi-delete-list", Desc="删文本/图形列表", Req=new[]{"listName"}, Flags=new[]{"dry-run","text","graphic"},
+                P=new Dictionary<string,string>{ ["listName"]="列表名", ["dry-run"]="true=只预览、不实际删", ["text"]="指定为文本列表", ["graphic"]="指定为图形列表(都不给则按类型推断)" } },
         };
     }
 }

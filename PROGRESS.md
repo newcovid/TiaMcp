@@ -4,7 +4,7 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`）
+最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`）
 
 ## 阶段状态
 | 阶段 | 内容 | 状态 |
@@ -77,6 +77,15 @@
 - 54 命令全包成 MCP 工具：ToolDef 登记表 + 通用 argv 组装（位置参/旗标/带值旗标/inline 文本经 %TEMP%）；`Program.Main` 拆出 `Dispatch`，MCP 重定向捕获命令 stdout 作工具结果、不改命令本身。
 - 实测：initialize/tools-list(54工具) 不需 TIA 通过；tools/call(list) 活 TIA 通过，命令输出被捕获未泄漏到协议流，isError=false。
 - **v1 大输出回完整文本**（保真，AI 整块导回需完整 XML/SCL）；v2 再按手册附录A做摘要+artifacts(full 按需)。
+
+### MCP 工具说明审计 + 加固（2026-06-04，针对"零上下文 AI 自主选参填参"）
+- **背景**：MCP 在新会话只注入工具 `name`/`description`/`inputSchema`（非 docs），AI 选对工具/填对参全靠这三者。原 `Schema()` 把**每个参数描述自动=参数名**（`blockName` 的描述就是 "blockName"），是准确率最大短板。
+- **P0 结构性**：`ToolDef` 加 `Dictionary<string,string> P`（参数/旗标名→描述），`Schema()` 经新 `PDesc()` 优先取 P、缺省回退；逐工具补齐 44/54 的参数与旗标说明（`dry-run`/`force`/`text`/`graphic`/`no-screen-export` 全部给出语义）。
+- **修一个 bug**：原 ValueFlags 默认描述"（可选筛选子串）"把 `hmi-read-tags` 的 `table`（精确表名选择器）误标为子串筛选——改默认为中性"（可选）"，并给 `table`/`filter` 各自精确描述。
+- **P1 反幻觉边界写死**（CLAUDE.md 要求，原 0/54 合规）：`read-tags`(无在线实际值/不读DB成员当前值)、`compile`/`compile-device`(不下载/不联机/不读诊断缓冲)、`device-network`(组态IP非在线)。
+- **P1 覆盖警告**：`import-scl`/`import-xml`/`import-udt` 说明写明"覆盖同名块且无 dry-run,先 export 备份"（与功能对等的 HMI import 都有 dry-run 不一致，描述层先补上;补 PLC import 真 dry-run 列为后续）。
+- **P2 重叠区分轴**：where-used(单跳/任意符号)↔callers-tree(递归/仅块)、block-deps↔call-tree、device-list(全项目一览)↔device-info(单设备)、`list` 点名 device-list/hmi-list、`outDir` 全部说明"内容已随结果返回,落盘明文可能被加密"、`import-project-texts.xlsxPath` 标注"唯一接磁盘路径的写工具"。
+- **验证**：`build.ps1` 0 错 0 警；自检 initialize+tools/list 仍 54 工具，抽查 export-source.outDir / hmi-read-tags.table / delete-block.force / read-tags.desc 新描述均已生效（无需 TIA）。**重编后 SHA256 变,下次真连 TIA 会重弹一次 Openness 授权框。**
 
 ## 待补（后续）
 - [ ] MCP v2：大输出摘要+artifacts 信封（附录A）；`--device` 多设备选择下沉 TiaSession
