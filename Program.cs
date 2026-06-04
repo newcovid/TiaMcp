@@ -102,6 +102,20 @@ namespace TiaMcp
                         { Console.WriteLine("用法: set-block-number <块名> <编号> [--dry-run]"); return 1; }
                         return Commands.SetBlockNumber(args[1], blkNum, args.Contains("--dry-run"));
 
+                    case "unlock-block":
+                    {
+                        // 块名为可选首位置参（省略=全部受保护块）；--password 值参；--dry-run
+                        string names = (args.Length >= 2 && !args[1].StartsWith("--")) ? args[1] : null;
+                        return Commands.UnlockBlock(names, GetOpt(args, "--password"), args.Contains("--dry-run"));
+                    }
+
+                    case "lock-block":
+                    {
+                        if (args.Length < 2 || args[1].StartsWith("--"))
+                        { Console.WriteLine("用法: lock-block <块名,逗号分隔> --password <pwd> [--dry-run]"); return 1; }
+                        return Commands.LockBlock(args[1], GetOpt(args, "--password"), args.Contains("--dry-run"));
+                    }
+
                     case "callers-tree":
                         if (args.Length < 2) { Console.WriteLine("用法: callers-tree <块名>"); return 1; }
                         return CrossRef.CallersTree(args[1]);
@@ -254,6 +268,7 @@ namespace TiaMcp
                         Console.WriteLine("  HMI模板/列表: hmi-export-template <名> <目录> | hmi-import-template <xml>[--dry-run] | hmi-delete-template <名>[--dry-run] | hmi-import-list <xml>[--text|--graphic][--dry-run] | hmi-delete-list <名>[--text|--graphic][--dry-run]");
                         Console.WriteLine("  排查: where-used <符号> | block-deps <块> | find-unused | call-tree <块> | callers-tree <块> | crossref-report");
                         Console.WriteLine("  写入/重构: import-scl <文件> | import-xml <文件> | write-tags <清单> | delete-tags <清单>[--dry-run] | edit-tags <清单>[--dry-run] | delete-block <块>[--dry-run][--force] | rename-block <旧> <新>[--dry-run] | set-block-number <块> <号>[--dry-run] | compile <块>");
+                        Console.WriteLine("  保护: unlock-block [块,逗号分隔] --password <pwd>[--dry-run] | lock-block <块,逗号分隔> --password <pwd>[--dry-run]");
                         Console.WriteLine("  工程: project-info | project-save | project-archive <目录>[名] | compile-device | export-all <目录> | export-watchtable <目录> | export-project-texts <目录>[语言] | import-project-texts <xlsx>");
                         return 1;
                 }

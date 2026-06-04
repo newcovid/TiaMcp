@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security;                       // SecureString（know-how 保护密码）
 using System.Text;
 using Siemens.Engineering;
 using Siemens.Engineering.Compiler;
@@ -363,6 +364,154 @@ namespace TiaMcp
                 catch (Exception ex) { Console.WriteLine("[错误] 改名失败: " + ex.Message + "（命名规则违例或重名？）"); Logger.Error("rename-block", ex); return 2; }
                 Console.WriteLine($"已改名为 {newName}。建议 compile {newName} 及各引用方核对。");
                 return 0;
+            }
+        }
+
+        // ========== unlock-block：移除 know-how 保护(Openness Unprotect)。块名可选,省略=对全部受保护块逐个尝试该密码 ==========
+        // 官方依据：手册 §5.11 p566-568，block.GetService<PlcBlockProtectionProvider>().Unprotect(SecureString)。
+        // 注意：博图里"双击+输密码"只是临时打开,Openness 仍读不到;必须本工具或博图取消保护,IsKnowHowProtected 才变 false。
+        public static int UnlockBlock(string blockNamesCsv, string password, bool dryRun)
+        {
+            if (!dryRun && string.IsNullOrEmpty(password))
+            { Console.WriteLine("[错误] 需提供 --password（dry-run 预览可不填）。"); return 1; }
+
+            using (var s = TiaSession.AttachFirst())
+            {
+                // 1) 目标集合
+                var targets = new List<PlcBlock>();
+                bool explicitList = !string.IsNullOrWhiteSpace(blockNamesCsv);
+                if (explicitList)
+                {
+                    foreach (var raw in blockNamesCsv.Split(','))
+                    {
+                        var name = raw.Trim();
+                        if (name.Length == 0) continue;
+                        PlcSoftware owner;
+                        var b = s.FindBlock(name, out owner);
+                        if (b == null) { Console.WriteLine($"[未找到] {name}"); continue; }
+                        targets.Add(b);
+                    }
+                }
+                else
+                {
+                    foreach (var kv in s.FindPlcs())
+                        foreach (var blk in EnumerateAllBlocks(kv.Value.BlockGroup))
+                            if (TiaSession.IsKnowHowProtected(blk)) targets.Add(blk);
+                }
+
+                if (targets.Count == 0)
+                { Console.WriteLine(explicitList ? "无有效目标块。" : "项目中没有受 know-how 保护的块。"); return 0; }
+
+                // 2) dry-run：只列目标 + 当前保护状态，不调 API、不需密码
+                if (dryRun)
+                {
+                    Console.WriteLine($"[DRY-RUN] 将尝试解锁 {targets.Count} 个块（未改动）：");
+                    foreach (var b in targets)
+                        Console.WriteLine($"  {b.Name}  保护={(TiaSession.IsKnowHowProtected(b) ? "是" : "否")}");
+                    return 0;
+                }
+
+                // 3) 逐块 Unprotect
+                int ok = 0, badPwd = 0, already = 0, unavail = 0, failed = 0;
+                foreach (var b in targets)
+                {
+                    string name = b.Name;
+                    if (explicitList && !TiaSession.IsKnowHowProtected(b))
+                    { Console.WriteLine($"[跳过] {name}：本就无保护"); already++; continue; }
+
+                    PlcBlockProtectionProvider prov;
+                    try { prov = b.GetService<PlcBlockProtectionProvider>(); }
+                    catch { prov = null; }
+                    if (prov == null)
+                    { Console.WriteLine($"[不可用] {name}：服务不可用（需先编译/非代码块或全局DB/在线/不支持）"); unavail++; continue; }
+
+                    try
+                    {
+                        using (var ss = MakeSecure(password)) prov.Unprotect(ss);
+                        if (TiaSession.IsKnowHowProtected(b))
+                        { Console.WriteLine($"[失败] {name}：调用后仍显示受保护"); failed++; }
+                        else { Console.WriteLine($"[OK] {name} 已解锁"); ok++; }
+                    }
+                    catch (Exception ex)
+                    {
+                        string m = ex.Message ?? "";
+                        if (m.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0
+                            || m.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0
+                            || m.Contains("拒绝") || m.Contains("密码"))
+                        { Console.WriteLine($"[跳过] {name}：密码不符"); badPwd++; }
+                        else if (m.IndexOf("without protection", StringComparison.OrdinalIgnoreCase) >= 0
+                            || m.Contains("未受保护"))
+                        { Console.WriteLine($"[跳过] {name}：已无保护"); already++; }
+                        else { Console.WriteLine($"[失败] {name}：{m}"); Logger.Error($"unlock-block {name}", ex); failed++; }
+                    }
+                }
+
+                Console.WriteLine($"小结：解锁 {ok} / 密码不符 {badPwd} / 已无保护 {already} / 不可用 {unavail} / 失败 {failed}");
+                Console.WriteLine("提示：解锁是内存改动，未落盘。读完用 lock-block 重新加锁；要持久化另调 project-save（会连同博图手改一并落盘）。");
+                return (badPwd > 0 || failed > 0) ? 2 : 0;
+            }
+        }
+
+        // ========== lock-block：设置 know-how 保护(Openness Protect)。块名必填(只按显式块名,防误锁) ==========
+        // 官方依据：手册 §5.11 p566，block.GetService<PlcBlockProtectionProvider>().Protect(SecureString)。
+        public static int LockBlock(string blockNamesCsv, string password, bool dryRun)
+        {
+            if (string.IsNullOrWhiteSpace(blockNamesCsv))
+            { Console.WriteLine("用法: lock-block <块名,逗号分隔> --password <pwd> [--dry-run]"); return 1; }
+            if (!dryRun && string.IsNullOrEmpty(password))
+            { Console.WriteLine("[错误] 需提供 --password。"); return 1; }
+
+            using (var s = TiaSession.AttachFirst())
+            {
+                var targets = new List<PlcBlock>();
+                foreach (var raw in blockNamesCsv.Split(','))
+                {
+                    var name = raw.Trim();
+                    if (name.Length == 0) continue;
+                    PlcSoftware owner;
+                    var b = s.FindBlock(name, out owner);
+                    if (b == null) { Console.WriteLine($"[未找到] {name}"); continue; }
+                    targets.Add(b);
+                }
+                if (targets.Count == 0) { Console.WriteLine("无有效目标块。"); return 0; }
+
+                if (dryRun)
+                {
+                    Console.WriteLine($"[DRY-RUN] 将尝试加锁 {targets.Count} 个块（未改动）：");
+                    foreach (var b in targets)
+                    {
+                        bool prot = TiaSession.IsKnowHowProtected(b);
+                        bool svc; try { svc = b.GetService<PlcBlockProtectionProvider>() != null; } catch { svc = false; }
+                        Console.WriteLine($"  {b.Name}  当前保护={(prot ? "是" : "否")}  可加锁={(svc && !prot ? "是" : "否")}");
+                    }
+                    return 0;
+                }
+
+                int ok = 0, already = 0, unavail = 0, failed = 0;
+                foreach (var b in targets)
+                {
+                    string name = b.Name;
+                    if (TiaSession.IsKnowHowProtected(b))
+                    { Console.WriteLine($"[跳过] {name}：已受保护"); already++; continue; }
+
+                    PlcBlockProtectionProvider prov;
+                    try { prov = b.GetService<PlcBlockProtectionProvider>(); }
+                    catch { prov = null; }
+                    if (prov == null)
+                    { Console.WriteLine($"[不可用] {name}：服务不可用（需先编译/非代码块或全局DB/在线/不支持）"); unavail++; continue; }
+
+                    try
+                    {
+                        using (var ss = MakeSecure(password)) prov.Protect(ss);
+                        Console.WriteLine($"[OK] {name} 已加锁"); ok++;
+                    }
+                    catch (Exception ex)
+                    { Console.WriteLine($"[失败] {name}：{ex.Message}"); Logger.Error($"lock-block {name}", ex); failed++; }
+                }
+
+                Console.WriteLine($"小结：加锁 {ok} / 已受保护 {already} / 不可用 {unavail} / 失败 {failed}");
+                Console.WriteLine("提示：加锁是内存改动，未落盘。要持久化用 project-save。");
+                return failed > 0 ? 2 : 0;
             }
         }
 
@@ -799,6 +948,16 @@ namespace TiaMcp
             foreach (PlcBlock b in group.Blocks) yield return b;
             foreach (PlcBlockGroup sub in group.Groups)
                 foreach (var b in EnumerateAllBlocks(sub)) yield return b;
+        }
+
+        // 由明文构造只读 SecureString，供 PlcBlockProtectionProvider.Protect/Unprotect 用。
+        // 注意：密码只在内存停留，绝不落盘/记日志/回显。
+        private static SecureString MakeSecure(string s)
+        {
+            var ss = new SecureString();
+            if (s != null) foreach (char c in s) ss.AppendChar(c);
+            ss.MakeReadOnly();
+            return ss;
         }
 
         private static PlcType FindUdt(TiaSession s, string name, out PlcSoftware owner)

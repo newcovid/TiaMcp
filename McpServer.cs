@@ -275,6 +275,19 @@ namespace TiaMcp
                 P=new Dictionary<string,string>{ ["oldName"]="现块名", ["newName"]="新块名", ["dry-run"]="true=只预览影响面、不实际改名" } },
             new ToolDef{ Name="set-block-number", Desc="改块号(号冲突会拒)", Req=new[]{"blockName","number"}, Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["blockName"]="块名", ["number"]="目标块号(整数;与现有块冲突会被拒)", ["dry-run"]="true=只预览、不实际改号" } },
+            // know-how 保护：解锁/加锁（官方 PlcBlockProtectionProvider.Unprotect/Protect）
+            new ToolDef{ Name="unlock-block", Desc="移除块的 know-how(专有技术)保护(Openness Unprotect)。【博图里双击+输密码只是临时打开,Openness 仍读不到;必须本工具或博图取消保护】。解锁后 export-source/export-xml 才出完整代码。不传块名=对全部受保护块逐个试该密码,密码不符的跳过(支持多块不同密码:换密码再调一次)。内存改动不落盘,读完用 lock-block 复原",
+                Opt=new[]{"blockNames"}, ValueFlags=new[]{"password"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{
+                    ["blockNames"]="要解锁的块名,逗号分隔多个;留空=对项目内全部受 know-how 保护的块逐个尝试",
+                    ["password"]="know-how 保护密码(必填;dry-run 预览可不填)。绝不存储,用完即弃",
+                    ["dry-run"]="true=只列将解锁哪些块及当前保护状态、不实际改、无需密码" } },
+            new ToolDef{ Name="lock-block", Desc="给块设置 know-how(专有技术)保护(Openness Protect)。块名必填(只按显式块名,防误锁无保护块)。配合 unlock-block 做解锁→读→复原。内存改动不落盘,要持久化用 project-save",
+                Req=new[]{"blockNames"}, ValueFlags=new[]{"password"}, Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{
+                    ["blockNames"]="要加锁的块名,逗号分隔多个(必填)",
+                    ["password"]="设置的保护密码(必填;dry-run 预览可不填)。绝不存储",
+                    ["dry-run"]="true=只列将加锁哪些块及是否可加锁、不实际改、无需密码" } },
             // 编译/工程
             new ToolDef{ Name="compile", Desc="编译指定块,结构化返回 Error/Warning。仅离线编译;不下载到 PLC、不联机、不读诊断缓冲区", Req=new[]{"blockName"},
                 P=new Dictionary<string,string>{ ["blockName"]="要编译的块名" } },
