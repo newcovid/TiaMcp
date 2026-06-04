@@ -40,8 +40,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## MCP 打包 I/O 约定（2026-06-04 审计定，详见 docs/COMMAND-MANUAL.md 附录 A/B）
 - **统一返回信封**：`{ok, tool, target{device,defaulted,devicesPresent}, dryRun, summary, data, artifacts[], diagnostics}`。错误用 `{ok:false,errorCode,message}`，errorCode 枚举取代重载 exit code。
-- **大产物不内联**：凡 >~8KB 文本（源码/XML/画面/大消息）写 `%TEMP%` 回 `{path,charCount,sha256}` + 结构化摘要，别灌爆上下文。**污染大户**：hmi-read-screen / export-xml / export-source / hmi-probe（均数万字符）。
-- **入参** inline 文本（不要求 AI 传磁盘路径）、named 参数、`targetDevice` 缺省第一个但在 diagnostics.warnings 显式记、破坏性工具必须 `dryRun`。
+- **大产物不内联（输出 + 输入双向）**：
+  - 输出：凡 >~8KB 文本（源码/XML/画面/大消息）写 `%TEMP%` 回 `{path,charCount,sha256}` + 结构化摘要，别灌爆上下文。**污染大户**：hmi-read-screen / export-xml / export-source / hmi-probe（均数万字符）。
+  - 输入（2026-06-04 补）：所有 inline 文本导入工具同时接磁盘路径入口 `<名>Path`（`xmlText`↔`xmlPath`、`sclText`↔`sclPath`、`listText`↔`listPath`），**大文件务必走路径**——内联要求 AI 逐字复现整份文本作单个 JSON 实参，画面 XML 常达数十万字符会撞 token 上限/截断（这正是「大文件内联报错」的根因，非 TIA/服务器限制）。机制：`McpServer.PathParamName` 由 TextParam 自动派生（以 `Text` 结尾 → `<名>Path`，`ToolDef.PathParam` 可显式兜底），`BuildArgs` 见路径则直通、不写 TEMP。text/path **二选一**，**都给则路径优先**并在结果前置 `[注意]`，**都不给**干净报错。底层命令零改动（本就按路径读、`LooksEncrypted` 拒密文、`DecodeUtf8StripBom` 容 BOM、对 TIA 二次中转仍 `WriteTempPlaintextVerified` 带 BOM）。
+- **入参** inline 文本或 `<名>Path` 磁盘路径（见上）、named 参数、`targetDevice` 缺省第一个但在 diagnostics.warnings 显式记、破坏性工具必须 `dryRun`。
 - **Openness 永久不可行边界**（工具说明须写死，防 AI 幻觉）：在线实际值 / force / 诊断缓冲区 / RUN-STOP / Upload / 在线分配PN名IP / 通道级诊断。
 - **MCP 长驻进程优化**：交叉引用应缓存"块名→导出文本/引用集合"索引（现 CLI 每命令独立进程做不到，每次全量导出）。
 

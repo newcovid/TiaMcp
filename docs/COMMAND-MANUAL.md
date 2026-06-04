@@ -313,7 +313,15 @@
 
 ## 3. PLC 写入
 
-> 共性：输入文件先校验**非密文**（密文返回 3）。MCP 阶段由 AI 直接传 inline 文本，工具内部经 `%TEMP%` 中转，不要求 AI 传磁盘路径。改完**不自动保存**——需显式 `project-save` 落盘。
+> 共性：输入文件先校验**非密文**（密文返回 3）。MCP 阶段 AI 可直接传 inline 文本（`sclText`/`xmlText`/`udtText`/`listText`，工具内部经 `%TEMP%` 中转），**也可传磁盘路径**（伴生参 `sclPath`/`xmlPath`/`udtPath`/`listPath`）。**二选一；都给则路径优先并提示；都不给报错。大文件（尤其画面 XML、整块 XML）务必用 `<名>Path` 传路径——内联会让 AI 逐字复现整份文本撞 token 上限而失败**。改完**不自动保存**——需显式 `project-save` 落盘。
+>
+> **闭环范式（export→编辑→import by path，推荐大产物用）**：
+> ```
+> hmi-export-screen 启动画面 D:/tmp        # 出 D:/tmp/启动画面.xml（明文）
+> # 编辑该 XML
+> hmi-import-screen xmlPath=D:/tmp/启动画面.xml dry-run=true   # 先看目标判定
+> hmi-import-screen xmlPath=D:/tmp/启动画面.xml               # 实写
+> ```
 
 ### `import-scl <scl文件路径>`
 - **用途**：导入 SCL 明文 → 生成块 → 自动编译新增块并结构化报错。
@@ -648,7 +656,7 @@
   导入完成。建议 hmi-read-screen 复核。
   ```
 - **退出码**：0 成功/预演；1 文件无/密文/解析失败/找不到；2 导入失败（多为尺寸/画面号/设备类型不符）。
-- **MCP 备注**：往返恒等已实测；整屏替换安全。
+- **MCP 备注**：往返恒等已实测；整屏替换安全。**画面 XML 常达数十万字符，MCP 调用务必用 `xmlPath` 传 `hmi-export-screen` 的产物路径，勿用 `xmlText` 内联**。
 
 ### `hmi-delete-screen <画面名> [--dry-run]`
 - **用途**：删除画面（API）。
@@ -738,7 +746,7 @@
 
 ## 附录 A：MCP 打包 I/O 约定（建议，包在现有命令之上，不动 Openness 调用）
 
-1. **入参**：一律 JSON named 参数，弃位置参与管道字符串。公共可选参数：`targetDevice`（缺省=第一个，但在 `diagnostics.warnings` 显式记 `defaulted to <name>, N devices present`，**绝不静默**）、`dryRun`（所有破坏性工具必须支持）。文本类输入接 inline 字符串（`sclText`/`xmlText`/`udtText`/`items[]`），工具内部经 `%TEMP%` 校验明文，**不要求 AI 传磁盘路径**。
+1. **入参**：一律 JSON named 参数，弃位置参与管道字符串。公共可选参数：`targetDevice`（缺省=第一个，但在 `diagnostics.warnings` 显式记 `defaulted to <name>, N devices present`，**绝不静默**）、`dryRun`（所有破坏性工具必须支持）。文本类输入**双入口**：inline 字符串（`sclText`/`xmlText`/`udtText`/`listText`，工具内部经 `%TEMP%` 校验明文）**或**磁盘路径（伴生参 `<名>Path`，由 `McpServer.PathParamName` 自动派生）。**二选一；都给路径优先 + 前置 `[注意]`；都不给报错。大文件务必走 `<名>Path`**（内联让 AI 逐字复现大文本会撞 token 上限/截断——这是「大文件内联报错」的根因，非 TIA/服务器限制；2026-06-04 修）。
 2. **路径**：正斜杠；工具内部产物落 `%TEMP%`，即用即删或回传路径，绝不让 AI 指定持久目录。
 3. **dry-run**：`dryRun=true` 只做预检 + 回"将发生什么"，不调任何写 API。
 4. **大产物回传**：凡可能 > ~8KB 文本（源码/XML/画面/大消息列表）默认不塞 result，回结构化摘要 + `{charCount,sha256}`；提供可选 `maxChars`/`head` 让调用方索要片段。

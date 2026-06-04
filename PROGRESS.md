@@ -4,7 +4,13 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block) + 实测加固两条工具说明**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`）
+最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block) + 实测加固两条工具说明 + inline 导入工具新增文件路径入口(`<名>Path`)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`，路径入口 spec/plan `docs/superpowers/specs|plans/2026-06-04-mcp-import-filepath*.md`）
+
+> **2026-06-04 能力增强 · inline 导入工具统一支持文件路径入口（解决大文件内联报错）**：`hmi-import-screen` 等只接 inline 文本，大画面 XML（实测单画面达 201,279 字符）内联导入会失败。
+> - **根因**：非 TIA/Openness 限制，也非服务器 JSON 上限（`MaxJsonLength=int.MaxValue`）；瓶颈在传输上游——inline 要求 AI 把整份文本作单个 JSON 实参逐字复现，撞 token 上限/截断/转义错。违反项目自己「大产物不内联」约定（原仅写给输出，输入侧漏了）。
+> - **修复（仅 `McpServer.cs`，底层命令零改）**：任何带 `TextParam` 的工具自动获得伴生 `<名>Path`（`xmlText`↔`xmlPath`/`sclText`↔`sclPath`/`listText`↔`listPath`，`PathParamName` 自动派生 + `ToolDef.PathParam` 兜底）。`BuildArgs` 见路径直通、不写 TEMP。**text/path 二选一；都给路径优先 + 前置 `[注意]`；都不给干净报错**。覆盖全部 11 个 inline 导入工具。大负载工具 Desc + 各 `<名>Path` 参数描述均写入 AGENT 引导（大文件走路径、典型来源 export-* 产物）。
+> - **安全不破**：路径直通后由底层命令读，已有 `LooksEncrypted` 拒密文、`DecodeUtf8StripBom` 容 BOM、对 TIA 二次中转仍 `WriteTempPlaintextVerified` 带 BOM。
+> - **验证**：build 0 错（1 警 CS0649=`PathParam` 兜底字段未显式赋值,无害）；`tools/list` 确认各工具出 `<名>Path` 且 text 不再 required；error 路径(都不给)、both-given(路径优先+提示)、path 直通(verbatim 转发不写 TEMP) 均经 MCP 烟雾测试通过。**剩活体闭环（真实画面 import 成功）需 TIA 开 + 手点 Openness 授权，留用户手测**。
 
 > **2026-06-04 实测加固（McpServer.cs 工具说明，build 0 错 0 警）**：真实项目跑出两条事实写进 MCP 接口描述，供新 AGENT 零上下文即知：
 > 1. `export-source`/`export-xml`：块被改过未重编→`IsConsistent=False`→Export 抛通用错 `Error when calling method Export`（是未编译,非加密）；**导出失败应先 `compile` 该块再导出**，勿当损坏。

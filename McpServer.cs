@@ -106,9 +106,12 @@ namespace TiaMcp
             var sw = new StringWriter();
             bool isError = false;
             int rc = 0;
+            string note = null;
             try
             {
-                var argv = BuildArgs(t, a, tempFiles);
+                string buildErr;
+                var argv = BuildArgs(t, a, tempFiles, out note, out buildErr);
+                if (buildErr != null) return Tuple.Create(buildErr, true);
                 Logger.Info("MCP 工具调用: " + string.Join(" ", argv.Take(1)) + " (" + (argv.Length - 1) + " args)");
                 Console.SetOut(sw);
                 try { rc = Program.Dispatch(argv); }
@@ -120,22 +123,52 @@ namespace TiaMcp
                 foreach (var f in tempFiles) { try { File.Delete(f); } catch { } }
             }
             string text = sw.ToString();
+            if (note != null) text = note + "\n" + text;
             if (text.Length == 0) text = "(无输出)";
             if (!isError) text += $"\n(退出码 {rc})";
             return Tuple.Create(text, isError);
         }
 
-        private static string[] BuildArgs(ToolDef t, Dictionary<string, object> a, List<string> tempFiles)
+        // 工具的有效"文件路径"入参名: 显式 PathParam 优先; 否则 TextParam 以 "Text" 结尾时自动派生 <名>Path; 都不满足回退 <名>Path/null
+        private static string PathParamName(ToolDef t)
         {
+            if (!string.IsNullOrEmpty(t.PathParam)) return t.PathParam;
+            if (t.TextParam == null) return null;
+            if (t.TextParam.EndsWith("Text", StringComparison.Ordinal))
+                return t.TextParam.Substring(0, t.TextParam.Length - 4) + "Path";
+            return t.TextParam + "Path";
+        }
+
+        // inline 文本入参既可 inline(写 %TEMP%) 也可传磁盘路径(<名>Path 直通)。
+        // note: 两者都给时的提示(path 优先); error: 两者都没给时的报错(短路, 不进 Dispatch)。
+        private static string[] BuildArgs(ToolDef t, Dictionary<string, object> a, List<string> tempFiles, out string note, out string error)
+        {
+            note = null; error = null;
             var argv = new List<string> { t.Name };
-            // inline 文本入参 -> 写 %TEMP% 明文，路径作首个位置参
             if (t.TextParam != null)
             {
-                string text = Str(a, t.TextParam) ?? "";
-                string tmp = IoUtil.NewTempFile(t.TextExt);
-                File.WriteAllText(tmp, text, new UTF8Encoding(false));
-                tempFiles.Add(tmp);
-                argv.Add(tmp);
+                string pathName = PathParamName(t);
+                string path = pathName != null ? Str(a, pathName) : null;
+                string text = Str(a, t.TextParam);
+                bool hasPath = !string.IsNullOrEmpty(path);
+                bool hasText = !string.IsNullOrEmpty(text);
+                if (hasPath)
+                {
+                    if (hasText) note = $"[注意] 同时提供了 {t.TextParam} 与 {pathName}，已采用文件路径 {pathName}。";
+                    argv.Add(path); // 路径直通，不写 TEMP（避免大文件内联）
+                }
+                else if (hasText)
+                {
+                    string tmp = IoUtil.NewTempFile(t.TextExt);
+                    File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                    tempFiles.Add(tmp);
+                    argv.Add(tmp);
+                }
+                else
+                {
+                    error = $"需提供 {t.TextParam}（内联文本）或 {pathName}（磁盘文件路径）之一。大文件请用 {pathName}。";
+                    return null;
+                }
             }
             foreach (var r in t.Req) { var v = Str(a, r); if (v != null) argv.Add(v); }
             foreach (var op in t.Opt) { var v = Str(a, op); if (!string.IsNullOrEmpty(v)) argv.Add(v); }
@@ -159,7 +192,14 @@ namespace TiaMcp
         {
             var props = new Dictionary<string, object>();
             var required = new List<string>();
-            if (t.TextParam != null) { props[t.TextParam] = StrProp(PDesc(t, t.TextParam, "inline 文本内容（直接传文本，工具内部经 %TEMP% 中转，勿传磁盘路径）")); required.Add(t.TextParam); }
+            if (t.TextParam != null)
+            {
+                string pathName = PathParamName(t);
+                // 有路径伴生参时 text 不再 required(二选一)；否则维持必填
+                props[t.TextParam] = StrProp(PDesc(t, t.TextParam, "inline 文本内容（小片段可内联；大文件改用 " + pathName + "，工具内部经 %TEMP% 中转，勿在此填磁盘路径）"));
+                if (pathName == null) required.Add(t.TextParam);
+                else props[pathName] = StrProp(PDesc(t, pathName, "本地磁盘文件路径（明文 .xml/.scl/.udt/.txt）；大产物走此参免内联爆 token，与 " + t.TextParam + " 二选一。常用对应 export-* 工具的产物文件路径"));
+            }
             foreach (var r in t.Req) { props[r] = StrProp(PDesc(t, r, r)); required.Add(r); }
             foreach (var op in t.Opt) props[op] = StrProp(PDesc(t, op, op + "（可选）"));
             foreach (var vf in t.ValueFlags) props[vf] = StrProp(PDesc(t, vf, vf + "（可选）"));
@@ -216,6 +256,7 @@ namespace TiaMcp
             public string[] ValueFlags = new string[0]; // 带值旗标 -> --name value
             public string TextParam;                    // inline 文本入参名（写临时文件，路径作首个位置参）
             public string TextExt = ".txt";
+            public string PathParam;                    // 显式路径入参名(兜底); 未给且 TextParam 以 Text 结尾则自动派生 <名>Path
             public Dictionary<string, string> P = new Dictionary<string, string>(); // 参数/旗标名->描述（覆盖 Schema 默认；零上下文 AI 选参填参的关键）
         }
 
@@ -257,18 +298,18 @@ namespace TiaMcp
                 P=new Dictionary<string,string>{ ["blockName"]="被调树根块名" } },
             new ToolDef{ Name="crossref-report", Desc="全项目交叉引用 Markdown 报表(体积可大)" },
             // PLC 写/重构
-            new ToolDef{ Name="import-scl", Desc="导入 SCL 明文->生成块->自动编译报错。会覆盖同名块且无 dry-run,建议先 export-source 备份", TextParam="sclText", TextExt=".scl",
-                P=new Dictionary<string,string>{ ["sclText"]="SCL 源码明文(inline,勿传磁盘路径);含同名块将被覆盖" } },
-            new ToolDef{ Name="import-xml", Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')。Override 静默覆盖且无 dry-run,务必先 export-xml 备份", TextParam="xmlText", TextExt=".xml",
-                P=new Dictionary<string,string>{ ["xmlText"]="SimaticML XML 明文(inline,勿传路径);同名块将被 Override 整块覆盖" } },
+            new ToolDef{ Name="import-scl", Desc="导入 SCL 明文->生成块->自动编译报错。会覆盖同名块且无 dry-run,建议先 export-source 备份。【大 SCL 用 sclPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-source 的产物】", TextParam="sclText", TextExt=".scl",
+                P=new Dictionary<string,string>{ ["sclText"]="SCL 源码明文(小片段内联;大文件改用 sclPath 传磁盘路径);含同名块将被覆盖", ["sclPath"]="SCL 明文文件磁盘路径(.scl);大源码走此参免内联爆 token,与 sclText 二选一。常用 export-source 的产物" } },
+            new ToolDef{ Name="import-xml", Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')。Override 静默覆盖且无 dry-run,务必先 export-xml 备份。【大 XML 用 xmlPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-xml 的产物】", TextParam="xmlText", TextExt=".xml",
+                P=new Dictionary<string,string>{ ["xmlText"]="SimaticML XML 明文(小片段内联;大文件改用 xmlPath 传磁盘路径);同名块将被 Override 整块覆盖", ["xmlPath"]="SimaticML XML 文件磁盘路径(.xml);大 XML 走此参免内联爆 token,与 xmlText 二选一。常用 export-xml 的产物" } },
             new ToolDef{ Name="import-udt", Desc="从明文 .udt 生成/覆盖 UDT。会覆盖同名 UDT 且无 dry-run", TextParam="udtText", TextExt=".udt",
-                P=new Dictionary<string,string>{ ["udtText"]="UDT 定义明文(inline,勿传路径);同名 UDT 将被覆盖" } },
+                P=new Dictionary<string,string>{ ["udtText"]="UDT 定义明文(小片段内联;大文件改用 udtPath 传磁盘路径);同名 UDT 将被覆盖", ["udtPath"]="UDT 明文文件磁盘路径(.udt);与 udtText 二选一。常用 export-udt 的产物" } },
             new ToolDef{ Name="write-tags", Desc="批量建 PLC 变量。无 dry-run", TextParam="listText", TextExt=".txt",
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|类型|地址(地址留空=符号变量)。inline 文本,勿传路径" } },
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|类型|地址(地址留空=符号变量)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一" } },
             new ToolDef{ Name="delete-tags", Desc="删 PLC 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名 或 仅 变量名。inline 文本", ["dry-run"]="true=只预览将删哪些、不实际删(建议先跑)" } },
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名 或 仅 变量名。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览将删哪些、不实际删(建议先跑)" } },
             new ToolDef{ Name="edit-tags", Desc="改 PLC 变量类型/地址", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|新类型|新地址(留空=该项不改)。inline 文本", ["dry-run"]="true=只预览改动、不实际写" } },
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|新类型|新地址(留空=该项不改)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览改动、不实际写" } },
             new ToolDef{ Name="delete-block", Desc="删块(删前查引用,被引用需 force)", Req=new[]{"blockName"}, Flags=new[]{"dry-run","force"},
                 P=new Dictionary<string,string>{ ["blockName"]="要删的块名", ["dry-run"]="true=只预览(含引用检查)、不实际删", ["force"]="即使该块仍被引用也强制删(危险,会留下悬空引用)" } },
             new ToolDef{ Name="rename-block", Desc="改块名(Openness 改名不更新引用,会告警影响面)", Req=new[]{"oldName","newName"}, Flags=new[]{"dry-run"},
@@ -320,23 +361,23 @@ namespace TiaMcp
                 P=new Dictionary<string,string>{ ["tagName"]="HMI 变量名(精确名,大小写不敏感;查准名用 hmi-read-tags)" } },
             // HMI 写
             new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]([]内可省)。inline 文本", ["dry-run"]="true=只预览、不实际写" } },
+                P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]([]内可省)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览、不实际写" } },
             new ToolDef{ Name="hmi-delete-tags", Desc="删 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行: [表名|]变量名。inline 文本", ["dry-run"]="true=只预览、不实际删" } },
+                P=new Dictionary<string,string>{ ["listText"]="每行: [表名|]变量名。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览、不实际删" } },
             new ToolDef{ Name="hmi-export-screen", Desc="导出单画面 XML 供编辑", Req=new[]{"screenName","outDir"},
                 P=new Dictionary<string,string>{ ["screenName"]="画面名", ["outDir"]="输出目录(必填)" } },
-            new ToolDef{ Name="hmi-import-screen", Desc="整屏替换/新建(传 inline XML)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["xmlText"]="画面 SimaticML XML 明文(inline);同名画面整屏替换,否则新建", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-import-screen", Desc="整屏替换/新建。【大画面 XML 用 xmlPath 传磁盘路径,勿把整份 XML 内联——画面 XML 常达数十万字符,内联会失败;典型来源 hmi-export-screen 的产物】", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["xmlText"]="画面 SimaticML XML 明文(小画面可内联;大画面改用 xmlPath 传磁盘路径);同名画面整屏替换,否则新建", ["xmlPath"]="画面 XML 文件磁盘路径(.xml);画面 XML 常达数十万字符,大文件务必走此参,与 xmlText 二选一。常用 hmi-export-screen 的产物", ["dry-run"]="true=只预览、不实际写" } },
             new ToolDef{ Name="hmi-delete-screen", Desc="删画面", Req=new[]{"screenName"}, Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["screenName"]="画面名", ["dry-run"]="true=只预览、不实际删" } },
             new ToolDef{ Name="hmi-export-template", Desc="导出模板(母版) XML 供编辑", Req=new[]{"templateName","outDir"},
                 P=new Dictionary<string,string>{ ["templateName"]="模板(母版)名", ["outDir"]="输出目录(必填)" } },
-            new ToolDef{ Name="hmi-import-template", Desc="整模板替换/新建(传 inline XML);改母版影响所有继承画面", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["xmlText"]="模板 SimaticML XML 明文(inline);改母版会影响所有继承它的画面", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-import-template", Desc="整模板替换/新建;改母版影响所有继承画面。【大模板 XML 用 xmlPath 传磁盘路径,勿大段内联;典型来源 hmi-export-template 的产物】", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["xmlText"]="模板 SimaticML XML 明文(小可内联;大改用 xmlPath 传磁盘路径);改母版会影响所有继承它的画面", ["xmlPath"]="模板 XML 文件磁盘路径(.xml);大文件务必走此参,与 xmlText 二选一。常用 hmi-export-template 的产物", ["dry-run"]="true=只预览、不实际写" } },
             new ToolDef{ Name="hmi-delete-template", Desc="删模板", Req=new[]{"templateName"}, Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["templateName"]="模板名", ["dry-run"]="true=只预览、不实际删" } },
-            new ToolDef{ Name="hmi-import-list", Desc="导入文本/图形列表(传 inline XML;未指定 text/graphic 则按 XML 推断)", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run","text","graphic"},
-                P=new Dictionary<string,string>{ ["xmlText"]="文本/图形列表 SimaticML XML 明文(inline)", ["dry-run"]="true=只预览、不实际写", ["text"]="指定导入为文本列表", ["graphic"]="指定导入为图形列表(text/graphic 都不给则按 XML 自动推断)" } },
+            new ToolDef{ Name="hmi-import-list", Desc="导入文本/图形列表(未指定 text/graphic 则按 XML 推断)。【列表 XML 较大时用 xmlPath 传磁盘路径】", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run","text","graphic"},
+                P=new Dictionary<string,string>{ ["xmlText"]="文本/图形列表 SimaticML XML 明文(小可内联;大改用 xmlPath 传磁盘路径)", ["xmlPath"]="列表 XML 文件磁盘路径(.xml);与 xmlText 二选一", ["dry-run"]="true=只预览、不实际写", ["text"]="指定导入为文本列表", ["graphic"]="指定导入为图形列表(text/graphic 都不给则按 XML 自动推断)" } },
             new ToolDef{ Name="hmi-delete-list", Desc="删文本/图形列表", Req=new[]{"listName"}, Flags=new[]{"dry-run","text","graphic"},
                 P=new Dictionary<string,string>{ ["listName"]="列表名", ["dry-run"]="true=只预览、不实际删", ["text"]="指定为文本列表", ["graphic"]="指定为图形列表(都不给则按类型推断)" } },
         };
