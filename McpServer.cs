@@ -226,9 +226,9 @@ namespace TiaMcp
             new ToolDef{ Name="list", Desc="列出所有 PLC 及全部块(类型/名称/语言/路径/受保护标记)。只列 PLC 程序块;要设备清单用 device-list,要 HMI 用 hmi-list" },
             new ToolDef{ Name="read-tags", Desc="列出 PLC 变量表与变量(名/类型/地址/中文注释)。仅离线组态值:Openness 无在线实际值/强制值,也不读 DB 成员当前值" },
             new ToolDef{ Name="read-udts", Desc="列出所有 UDT 自定义类型名" },
-            new ToolDef{ Name="export-source", Desc="导出 SCL/STL 块源码文本(图形块改用 export-xml)。源码直接随结果返回,无需另存", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
+            new ToolDef{ Name="export-source", Desc="导出 SCL/STL 块源码文本(图形块改用 export-xml)。源码直接随结果返回,无需另存。【导出前置:块须 IsConsistent=True(已编译)。块被改过未重新编译→IsConsistent=False→Export 抛通用错 'Error when calling method Export'(是未编译,非加密;受保护=False 时即此因);对策:先对该块 compile(0 错即转一致)再导出。故导出失败应先 compile 重试,勿当作块损坏。可先 block-info 看一致性】", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
                 P=new Dictionary<string,string>{ ["blockName"]="要导出的块名(大小写不敏感)", ["outDir"]="可选;源码已随结果返回,仅当需要额外磁盘明文副本时给目录(注意落盘明文可能被本机 E-SafeNet 加密)" } },
-            new ToolDef{ Name="export-xml", Desc="导出任意块(含图形块/DB)为 SimaticML XML;体积可大,XML 已随结果返回。AI 整块改 LAD/FBD 必须先用它拿完整 XML", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
+            new ToolDef{ Name="export-xml", Desc="导出任意块(含图形块/DB)为 SimaticML XML;体积可大,XML 已随结果返回。AI 整块改 LAD/FBD 必须先用它拿完整 XML。【导出前置:块须 IsConsistent=True(已编译)。改过未编译的块 IsConsistent=False→Export 抛通用错 'Error when calling method Export'(是未编译,非加密;受保护=False 时即此因);对策:先对该块 compile 再导出即可。故导出失败应先 compile 重试,勿当作块损坏。可先 block-info 看一致性】", Req=new[]{"blockName"}, Opt=new[]{"outDir"},
                 P=new Dictionary<string,string>{ ["blockName"]="要导出的块名(大小写不敏感)", ["outDir"]="可选;XML 已随结果返回,仅需磁盘副本时给目录(落盘明文可能被加密)" } },
             new ToolDef{ Name="export-udt", Desc="导出一个 UDT 的完整成员定义文本(已随结果返回)", Req=new[]{"udtName"}, Opt=new[]{"outDir"},
                 P=new Dictionary<string,string>{ ["udtName"]="要导出的 UDT 名", ["outDir"]="可选;定义已随结果返回,仅需磁盘副本时给目录" } },
@@ -276,7 +276,7 @@ namespace TiaMcp
             new ToolDef{ Name="set-block-number", Desc="改块号(号冲突会拒)", Req=new[]{"blockName","number"}, Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["blockName"]="块名", ["number"]="目标块号(整数;与现有块冲突会被拒)", ["dry-run"]="true=只预览、不实际改号" } },
             // know-how 保护：解锁/加锁（官方 PlcBlockProtectionProvider.Unprotect/Protect）
-            new ToolDef{ Name="unlock-block", Desc="移除块的 know-how(专有技术)保护(Openness Unprotect)。【博图里双击+输密码只是临时打开,Openness 仍读不到;必须本工具或博图取消保护】。解锁后 export-source/export-xml 才出完整代码。不传块名=对全部受保护块逐个试该密码,密码不符的跳过(支持多块不同密码:换密码再调一次)。内存改动不落盘,读完用 lock-block 复原",
+            new ToolDef{ Name="unlock-block", Desc="移除块的 know-how(专有技术)保护(Openness Unprotect)。【博图里双击+输密码只是临时打开,Openness 仍读不到;必须本工具或博图取消保护】。解锁后 export-source/export-xml 才出完整代码。【DB 解不了:Unprotect 仅对代码块 FC/FB/OB 提供;背景/全局 DB 调 GetService<PlcBlockProtectionProvider> 返回 null→报'服务不可用',密码根本不被测试(与密码对错无关);受保护 DB 只能在博图手动取消保护。实例DB损失小:其结构由可读的母FB接口决定】。不传块名=对全部受保护块逐个试该密码,密码不符的跳过(支持多块不同密码:换密码再调一次)。内存改动不落盘,读完用 lock-block 复原",
                 Opt=new[]{"blockNames"}, ValueFlags=new[]{"password"}, Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{
                     ["blockNames"]="要解锁的块名,逗号分隔多个;留空=对项目内全部受 know-how 保护的块逐个尝试",

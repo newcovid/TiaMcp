@@ -96,6 +96,7 @@
   [已存明文副本] D:/out/FB_Motor.scl（注意：本机全盘扫描可能稍后将其加密，请尽快提交 Git）
   ```
 - **退出码**：0 成功；1 找不到块；2 块是图形语言（提示改用 `export-xml`）。
+- **导出失败排查（实测 2026-06-04）**：块若 `IsConsistent=False`（被改过但未重新编译），`Export` 会抛通用错 `Error when calling method 'Export' of type '...'`——**这是"未编译"，不是加密**（`受保护=False` 时即此因）。判别：`block-info` 看"一致(IsConsistent)"。对策：先对该块 `compile`（0 错即转 True），再导出即可。**AGENT 遇此错应先 compile 重试，勿当作块损坏/工程报废。**
 - **MCP 备注**：**污染大户**（大块上万行）。MCP 化应回 `{lineCount,charCount,sha256,artifactPath}` + 可选 `head` 片段，全文写 `%TEMP%` 回传而非塞进 result。
 
 ### `export-xml <块名> [目录]`
@@ -111,6 +112,7 @@
   ==== 结束（86214 字符）====
   ```
 - **退出码**：0 成功；1 找不到块；2 导出失败。
+- **导出失败排查（实测 2026-06-04）**：与 `export-source` 同源——块 `IsConsistent=False`（改过未重编）时 `Export` 抛 `Error when calling method 'Export' of type '...SW.Blocks.FC'`，**是未编译非加密**。先 `compile` 该块再导出。实例：`PN_SEW_Speed_Control`/`_1` 两个 LAD FC 改后未编译→导出失败；`compile` 0 错→`IsConsistent=True`→交叉引用扫描从 115 块升到 117、导出失败清零。交叉引用套件（`where-used`/`call-tree` 等）内部也走 `Export`，故其诊断里的"导出失败：X"同理——先 compile 那些块再重跑。
 - **MCP 备注**：**污染最高**（图形块 3 万~15 万字符）。MCP 化必须只回解析摘要（网络数/CallInfo 调用/Access 符号）+ `artifactPath`，全文不进 result。也用于读 DB 结构（DB 是 PlcBlock，无语言门槛）。
 
 ### `export-udt <UDT名> [目录]`
@@ -662,6 +664,7 @@
 ### `unlock-block [块名,逗号分隔] --password <pwd> [--dry-run]` 🆕
 - **用途**：移除块的 know-how(专有技术)保护（Openness `PlcBlockProtectionProvider.Unprotect(SecureString)`，手册 §5.11 p567 / §6.4.2.4 p1499）。**解锁后 `export-source`/`export-xml` 才出完整代码**（否则只出公共接口）。
 - **关键事实**：博图里"双击块+输密码"只是 GUI 编辑器会话内**临时打开**，`IsKnowHowProtected` 仍为 true，Openness/MCP **仍读不到**——必须本命令或博图"取消保护"才真正移除。
+- **DB 解不了（实测 2026-06-04）**：`Unprotect` 服务（`PlcBlockProtectionProvider`）**只对代码块 FC/FB/OB 提供**；背景/全局 DB 的 `GetService<PlcBlockProtectionProvider>()` 返回 **null** → 输出 `[不可用]：服务不可用`，**密码根本没被测试**（结果与密码对错无关）。所以受保护的 DB 用本命令解不了，只能在博图手动取消保护。实例：本项目唯一受保护块 `PID_Control_DB`（实例DB，其母 FB `PID_Control` 反而未保护），传正确密码仍报"不可用"。实例DB损失小——其结构由可读的母 FB 接口决定，没有独立代码逻辑。
 - **输入**：块名（逗号分隔多个）**可省略**——省略=对项目内全部受保护块逐个尝试该密码（密码不符的跳过，支持多块不同密码：换密码再调一次）。`--password` 必填（dry-run 预览可不填）。
 - **输出示例**：
   ```

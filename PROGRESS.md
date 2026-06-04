@@ -4,7 +4,12 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`）
+最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block) + 实测加固两条工具说明**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`）
+
+> **2026-06-04 实测加固（McpServer.cs 工具说明，build 0 错 0 警）**：真实项目跑出两条事实写进 MCP 接口描述，供新 AGENT 零上下文即知：
+> 1. `export-source`/`export-xml`：块被改过未重编→`IsConsistent=False`→Export 抛通用错 `Error when calling method Export`（是未编译,非加密）；**导出失败应先 `compile` 该块再导出**，勿当损坏。
+> 2. `unlock-block`：`Unprotect` 仅对代码块 FC/FB/OB 提供；**背景/全局 DB `GetService<PlcBlockProtectionProvider>` 返回 null→"服务不可用",密码不被测试**；受保护 DB 只能博图手动取消。
+> ⚠️ 仅改了源码描述串；**新描述需重编 `bin\Release\net48\TiaMcp.exe` 并重启 MCP 服务器才生效**（重编 SHA256 变→真连 TIA 会重弹一次 Openness 授权）。
 
 ## 阶段状态
 | 阶段 | 内容 | 状态 |
