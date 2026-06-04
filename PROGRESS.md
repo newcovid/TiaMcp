@@ -11,6 +11,12 @@
 > 2. `unlock-block`：`Unprotect` 仅对代码块 FC/FB/OB 提供；**背景/全局 DB `GetService<PlcBlockProtectionProvider>` 返回 null→"服务不可用",密码不被测试**；受保护 DB 只能博图手动取消。
 > ⚠️ 仅改了源码描述串；**新描述需重编 `bin\Release\net48\TiaMcp.exe` 并重启 MCP 服务器才生效**（重编 SHA256 变→真连 TIA 会重弹一次 Openness 授权）。
 
+> **2026-06-04 关键修复 · CJK 标识符乱码（import-scl/import-udt）**：实跑发现导入含中文块名/常量/DB 引用的 SCL 后，块名/标识符变乱码（如 `速度转换测试`→`閫熷害杞崲娴嬭瘯`），未覆盖原块反而新建乱码块。
+> - **根因**：`IoUtil.WriteTempPlaintextVerified` 注释声称"UTF-8 带 BOM"，但实现用 `new UTF8Encoding(true).GetBytes()` + `WriteAllBytes`——`Encoding.GetBytes()` **永不含 BOM**（只有 `GetPreamble()`/`StreamWriter` 才写 BOM）。结果 TEMP 中转的 `.scl/.udt` 无 BOM，TIA 在中文 Windows(ANSI 码页 936/GBK)上按 GBK 回读 → UTF-8 字节被误解码成乱码。
+> - **波及**：所有走外部源文本路径的写工具——`import-scl`、`import-udt`（中文成员名同样会废）。XML 路径(import-xml/HMI 各 import)靠 `encoding` 声明本不受影响。
+> - **修复**：在 `WriteTempPlaintextVerified` 显式拼上 `GetPreamble()`（EF BB BF），含 BOM 的完整字节再交字节级回读校验。一处修复覆盖全部文本/ XML 中转。XML 加 BOM 无害（TIA 自己导出的 XML 也带 BOM）。
+> - **遗留**：本次 bug 已在 TIA 内存里产生过一个乱码垃圾块（真实存储名比显示名多一个 GBK 不可显字符 → 按显示名 delete/block-info 命中不了）；尚未 `project-save`，磁盘未受影响，**在博图里手动删除该块即可**，或重启 TIA 丢弃未保存改动。
+
 ## 阶段状态
 | 阶段 | 内容 | 状态 |
 |---|---|---|

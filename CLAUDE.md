@@ -25,6 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 不可回退的硬约束（来之不易）
 1. **本机 E-SafeNet 透明加密**：**TIA 进程**写的文件被加密（头含 `E-SafeNet`），**我们进程**写的是明文，**`%TEMP%` 是豁免区**。故**所有 TIA 文件 I/O 必经 `%TEMP%`（IoUtil.NewTempFile），写后/读后校验非密文（IoUtil.LooksEncrypted），即用即删**。还有定期全盘扫描会把落盘明文再加密，**永不信任持久化明文文件**——交付物是内存文本，临时文件是一次性的。
+   - **1a. CJK/UTF-8 BOM 铁律（来之不易，import-scl/udt 乱码根因）**：写给 TIA 读的 TEMP 文本文件（外部源 `.scl/.udt`）**必须带 UTF-8 BOM**。TIA 在中文 Windows(ANSI 码页 936/GBK)上读**无 BOM** 文本时按 GBK 解码 → 中文标识符被 UTF-8→GBK 误解码成乱码、找不到中文 DB 引用。坑：`Encoding.GetBytes()` **永不含 BOM**（参数 `UTF8Encoding(true)` 形同虚设），只有 `GetPreamble()`/`StreamWriter` 才落 BOM。统一出口 `IoUtil.WriteTempPlaintextVerified` 已显式拼 `GetPreamble()` 并把含 BOM 的完整字节交回读校验——**所有给 TIA 读的中转文本都必须走它，别另写 `WriteAllBytes(GetBytes(...))`**。导出给用户/Git 的交付物则用无 BOM(`UTF8Encoding(false)`)，那条路不经 TIA。
 2. **stdout 纪律**：进度/诊断走 stderr，日志走文件。阶段5（MCP stdio）stdout 被 JSON-RPC 独占，那条路上绝不能往 stdout 打调试。
 3. **STA + 串行**：Openness 有 COM 交互、非线程安全。`[STAThread]`、请求串行处理。
 4. **双路径读写**：SCL/STL 走文本源（GenerateSource / 外部源 CreateFromFile+GenerateBlocksFromSource）；图形(LAD/FBD/GRAPH)走 SimaticML XML（PlcBlock.Export / Blocks.Import(Override)）。

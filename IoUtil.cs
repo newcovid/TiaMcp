@@ -57,10 +57,24 @@ namespace TiaMcp
         /// <summary>
         /// 把文本写到 %TEMP% 并立刻读回校验"仍是我们写的明文"，最多重试 3 次，返回路径。
         /// 用 UTF-8 带 BOM，与 TIA 自己导出的格式一致。
+        ///
+        /// 【关键坑·CJK 乱码根因】必须真正写出 UTF-8 BOM(EF BB BF)。
+        /// Encoding.GetBytes() 永远不含前导 BOM——BOM 只在 GetPreamble()/StreamWriter
+        /// 写文件时才落盘。早期版本用 `new UTF8Encoding(true).GetBytes()` + WriteAllBytes，
+        /// 参数 true 形同虚设、实际无 BOM。后果：TIA 在中文 Windows(ANSI 码页 936/GBK)上
+        /// 读外部源(.scl/.udt)缺 BOM 时按 GBK 解码 → 中文标识符被 UTF-8→GBK 误解码成乱码
+        /// (块名/常量/中文 DB 引用全废，import-scl/import-udt 关键 bug)。XML 路径靠 encoding
+        /// 声明本不受影响，但加 BOM 同样无害(TIA 自己导出的 XML 也带 BOM)。
+        /// 故此处显式拼上 GetPreamble()，并把含 BOM 的完整字节交给字节级回读校验。
         /// </summary>
         public static string WriteTempPlaintextVerified(string text, string ext)
         {
-            byte[] bytes = new UTF8Encoding(true).GetBytes(text);
+            var enc = new UTF8Encoding(true);
+            byte[] preamble = enc.GetPreamble();   // EF BB BF —— GetBytes() 不含它，必须自己拼
+            byte[] body = enc.GetBytes(text);
+            byte[] bytes = new byte[preamble.Length + body.Length];
+            Buffer.BlockCopy(preamble, 0, bytes, 0, preamble.Length);
+            Buffer.BlockCopy(body, 0, bytes, preamble.Length, body.Length);
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 string path = NewTempFile(ext);
