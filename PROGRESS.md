@@ -4,9 +4,19 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**layout 命令交叉验证通过 + 行为特征写入 MCP 描述和手册**）
+最近更新：2026-06-05（**layout 命令属性归属重写：修复父控件吸入子控件属性 + 控件计数剔除图层/ProcessValue**）
 
-> **2026-06-05 layout 命令交叉验证 + 行为特征文档化**：
+> **2026-06-05 layout 命令属性归属重写（修复父/子属性串扰）**：
+> - **问题（用户反馈）**：`hmi-read-screen-layout`/`hmi-read-template-layout` 把子控件的属性显示到父控件上——根因是 `ChildText` 用 `Descendants()` 递归穿透，父容器(ScreenLayer/Group)读到第一个子控件的位置/大小，且动画/事件统计 = 自身+所有子控件之和；同时 `Hmi.Screen.Property`(ProcessValue) 被当独立控件计数（72 虚高）。此前文档把这些当"行为特征(非Bug)"，实为语义错误+上下文污染。
+> - **修复**：新增作用域助手 `AttrText`(只读控件自身 `<AttributeList>`)、`IsControlBoundary`/`ScopedDescendants`(遇嵌套子控件即剪枝)、`ParentContainer`、`ControlText`、`FindBoundTag`。布局解析全面改用作用域读取：
+>   1. 控件总数剔除 `ScreenLayer`(图层) 和 `Property`(ProcessValue)，标注剔除数量（实测车体状态 72→59）
+>   2. 每控件位置/大小/颜色/字体/动画/事件只取自身；Group 内控件单列并标注 `∈组 X`
+>   3. 绑定变量仅过程值，动画触发器变量在动画段单列（不再误报）
+>   4. 顺带修复：字体改读 `Hmi.Globalization.FontItem`(旧实现找 `Font`/`HmiFontPart` 恒失败)、文本读 `MultilingualText` 正文、画面号字段 `Number`(旧用 `ScreenNumber` 恒 `#?`)、重叠对仅列前 20
+> - **验证**：编译 0 错 0 警；CLI + MCP 路径实测 `0010 车体状态`(59控件) 与 `全局画面` 模板，逐项与 `hmi-export-screen/template` 原始 XML 交叉验证一致（IOField 位置(101,183)/49×26/宋体12Bold/绑定 DirAxis_..._Current_Angle 等精确匹配）
+> - **文档更新**：`McpServer.cs` 工具描述 + `docs/COMMAND-MANUAL.md` 改写（删除旧"行为特征"误导说明，改为"属性归属准确"）
+
+> **2026-06-05 layout 命令交叉验证 + 行为特征文档化（已被上条取代）**：
 > - **验证**：选取 4 个测试对象（0001_MainPicture、0010 车体状态、模板_1、全局画面），分别运行 `hmi-read-*-layout` 和 `hmi-export-*`，将 layout 解析输出与原始 XML 逐项对比。**全部通过**：画面尺寸、背景色、控件位置/大小/颜色、文本、变量绑定、可见性、边框、事件（函数名+类型+参数）、动画（触发器+范围值+颜色+可见性）均与 XML 精确匹配。
 > - **行为特征发现**（非 Bug，需理解）：
 >   1. 动画"继承"聚合：`PrintAnimations` 用 `Descendants()` 搜索，Group/ScreenLayer 的动画数 = 自身 + 所有子控件之和，同一动画在父子各出现一次

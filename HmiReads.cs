@@ -235,6 +235,85 @@ namespace TiaMcp
             return c != null ? c.Value.Trim() : null;
         }
 
+        // ===== 布局解析专用作用域助手(修复"父控件吸入子控件属性") =====
+        // SimaticML 结构:每个控件自身的标量属性都在它"直接的" <AttributeList> 子节点里;
+        // 子控件/动画/事件/字体则在 <ObjectList> 里。ChildText 用 Descendants() 会递归穿透,
+        // 导致父容器(ScreenLayer/Group)误读到第一个子控件的属性、并把子控件的动画/事件计入自己。
+        // 故下列助手按"控件边界"剪枝,确保属性只归属真正拥有它的控件。
+
+        // 控件自身标量属性:只认它自己的 <AttributeList>,绝不递归进 <ObjectList>。
+        private static string AttrText(XElement obj, string key)
+        {
+            var al = obj.Elements().FirstOrDefault(x => x.Name.LocalName == "AttributeList");
+            if (al == null) return null;
+            var c = al.Elements().FirstOrDefault(x => x.Name.LocalName == key && !string.IsNullOrWhiteSpace(x.Value));
+            return c != null ? c.Value.Trim() : null;
+        }
+
+        // 是否"嵌套子控件边界"——作用域遍历遇到它就剪枝,不并入父控件。
+        // 子控件 = CompositionName=="ScreenItems" 的 Hmi.Screen.* 控件,或 ScreenLayer 图层容器。
+        // Hmi.Screen.Property(ProcessValue 等)是控件自身的子属性、非独立控件,不剪。
+        private static bool IsControlBoundary(XElement e)
+        {
+            if (!e.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)) return false;
+            if (e.Name.LocalName == "Hmi.Screen.Property") return false;
+            string comp = e.Attribute("CompositionName")?.Value;
+            return comp == "ScreenItems" || e.Name.LocalName == "Hmi.Screen.ScreenLayer";
+        }
+
+        // 控件自身作用域内的后代:遇嵌套子控件即剪掉整棵子树,但保留 Property/Font/动画/事件等自身组成。
+        private static IEnumerable<XElement> ScopedDescendants(XElement obj)
+        {
+            foreach (var child in obj.Elements())
+            {
+                if (IsControlBoundary(child)) continue;
+                yield return child;
+                foreach (var d in ScopedDescendants(child)) yield return d;
+            }
+        }
+
+        // 找控件的父容器(组):最近的 Hmi.Screen.* 祖先,排除图层/画面根。无则返回 null(顶层控件)。
+        private static string ParentContainer(XElement o)
+        {
+            var anc = o.Ancestors().FirstOrDefault(a =>
+                a.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)
+                && a.Name.LocalName != "Hmi.Screen.Screen"
+                && a.Name.LocalName != "Hmi.Screen.ScreenTemplate"
+                && a.Name.LocalName != "Hmi.Screen.ScreenLayer");
+            return anc != null ? (AttrText(anc, "ObjectName") ?? AttrText(anc, "Name")) : null;
+        }
+
+        // 控件标题/显示文本:在自身作用域内取 MultilingualText 正文(去 body/p 包裹),跳过 HelpText。
+        private static string ControlText(XElement o)
+        {
+            foreach (var mt in ScopedDescendants(o).Where(x => x.Name.LocalName == "MultilingualText"))
+            {
+                string comp = mt.Attribute("CompositionName")?.Value ?? "";
+                if (comp == "HelpText") continue;
+                var t = mt.Descendants().FirstOrDefault(x => x.Name.LocalName == "Text" && !string.IsNullOrWhiteSpace(x.Value));
+                if (t != null) return t.Value.Trim();
+            }
+            return AttrText(o, "Text");
+        }
+
+        // 控件的"直接绑定变量"= 其 Property(过程值)下 TagConnectionDynamic 引用的 Tag;
+        // 不含动画触发器变量(那些在动画段单列,避免把触发器误报成绑定)。
+        private static string FindBoundTag(XElement o)
+        {
+            foreach (var prop in ScopedDescendants(o).Where(x => x.Name.LocalName == "Hmi.Screen.Property"))
+            {
+                var tag = prop.Descendants().FirstOrDefault(x =>
+                    x.Name.LocalName.IndexOf("Tag", StringComparison.OrdinalIgnoreCase) >= 0
+                    && x.Elements().Any(c => c.Name.LocalName == "Name"));
+                if (tag != null)
+                {
+                    string n = ChildText(tag, "Name");
+                    if (!string.IsNullOrWhiteSpace(n)) return n;
+                }
+            }
+            return null;
+        }
+
         // ===== hmi-read-screen <名>:单张画面控件摘要 + 可识别的绑定变量 =====
         public static int HmiReadScreen(string screenName)
         {
@@ -537,17 +616,23 @@ namespace TiaMcp
             }
         }
 
-        // 解析动画信息
+        // 解析动画信息(仅本控件自身的动画;作用域剪枝,不并入子控件,修复父容器动画聚合)
         private static void PrintAnimations(XElement controlEl, string controlName)
         {
-            // 查找所有动画元素
-            var animations = controlEl.Descendants()
+            // 仅在控件自身作用域内查动画元素
+            var animations = ScopedDescendants(controlEl)
                 .Where(e => e.Name.LocalName.StartsWith("Hmi.Dynamic.", StringComparison.Ordinal))
                 .ToList();
 
-            if (animations.Count == 0) return;
+            // 动画"块"只数顶层动画类型(RangeAppearance/Visibility/TagConnection),
+            // 不把内部的 Trigger/Range 也计进个数(旧实现把这些也计入导致虚高)。
+            int animCount = animations.Count(e =>
+                e.Name.LocalName == "Hmi.Dynamic.RangeAppearanceAnimation"
+                || e.Name.LocalName == "Hmi.Dynamic.VisibilityAnimation"
+                || e.Name.LocalName == "Hmi.Dynamic.TagConnectionDynamic");
+            if (animCount == 0) return;
 
-            Console.WriteLine($"       ── 动画 ({animations.Count} 个) ──");
+            Console.WriteLine($"       ── 动画 ({animCount} 个) ──");
 
             // 解析范围外观动画
             var rangeAnimations = animations
@@ -578,11 +663,11 @@ namespace TiaMcp
 
                 foreach (var range in ranges)
                 {
-                    string lower = ChildText(range, "LowerLimit") ?? "?";
-                    string upper = ChildText(range, "UpperLimit") ?? "?";
-                    string backColor = ChildText(range, "BackColor") ?? "-";
-                    string foreColor = ChildText(range, "ForeColor") ?? "-";
-                    string flashing = ChildText(range, "FlashingType") ?? "No";
+                    string lower = AttrText(range, "LowerLimit") ?? "?";
+                    string upper = AttrText(range, "UpperLimit") ?? "?";
+                    string backColor = AttrText(range, "BackColor") ?? "-";
+                    string foreColor = AttrText(range, "ForeColor") ?? "-";
+                    string flashing = AttrText(range, "FlashingType") ?? "No";
 
                     Console.WriteLine($"           范围 [{lower} ~ {upper}]:");
                     Console.WriteLine($"             背景色: {backColor}");
@@ -629,11 +714,11 @@ namespace TiaMcp
             }
         }
 
-        // 解析事件信息
+        // 解析事件信息(仅本控件自身的事件;作用域剪枝,不并入子控件)
         private static void PrintEvents(XElement controlEl, string controlName)
         {
-            // 查找所有事件元素
-            var events = controlEl.Descendants()
+            // 仅在控件自身作用域内查事件元素
+            var events = ScopedDescendants(controlEl)
                 .Where(e => e.Name.LocalName == "Hmi.Event.Event")
                 .ToList();
 
@@ -756,6 +841,8 @@ namespace TiaMcp
         }
 
         // 解析画面XML，提取视觉布局信息(位置/大小/颜色/字体 + 动画 + 事件)
+        // 关键:控件属性一律走 AttrText/作用域助手——只取控件"自身 AttributeList"的值,
+        // 绝不像旧实现那样用 Descendants() 递归穿透、把子控件属性误算到父容器上。
         private static void PrintScreenLayout(string xml, string screenName)
         {
             var doc = XDocument.Parse(xml);
@@ -764,19 +851,18 @@ namespace TiaMcp
                         ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.ScreenTemplate");
             if (screenEl == null) { Console.WriteLine("  [错误] 无法解析画面根元素"); return; }
 
-            // 画面基本信息
-            string width = ChildText(screenEl, "Width") ?? "?";
-            string height = ChildText(screenEl, "Height") ?? "?";
-            string backColor = ChildText(screenEl, "BackColor") ?? "?";
-            string screenNumber = ChildText(screenEl, "ScreenNumber") ?? "?";
+            // 画面基本信息(取画面根自身 AttributeList;画面号字段名是 Number)
+            string width = AttrText(screenEl, "Width") ?? "?";
+            string height = AttrText(screenEl, "Height") ?? "?";
+            string backColor = AttrText(screenEl, "BackColor") ?? "?";
+            string screenNumber = AttrText(screenEl, "Number") ?? "?";
 
             Console.WriteLine($"  画面: {screenName} (#{screenNumber})");
             Console.WriteLine($"  尺寸: {width} x {height} (DIU)");
             Console.WriteLine($"  背景色: {backColor}");
 
-            // 画面级事件(ClearScreen/GenerateScreen 等) — 直接在屏幕根的 ObjectList 下
-            var screenEvents = screenEl.Descendants().Where(e => e.Name.LocalName == "Hmi.Event.Event"
-                && e.Parent?.Parent == screenEl).ToList();
+            // 画面级事件(ClearScreen/GenerateScreen 等) — 作用域剪到图层之前,只取画面根自身事件
+            var screenEvents = ScopedDescendants(screenEl).Where(e => e.Name.LocalName == "Hmi.Event.Event").ToList();
             if (screenEvents.Count > 0)
             {
                 Console.WriteLine();
@@ -806,14 +892,19 @@ namespace TiaMcp
             }
             Console.WriteLine();
 
-            // 提取所有画面对象
+            // 提取所有"真实控件":排除画面根、模板根、结构性图层(ScreenLayer)、控件子属性(Property/ProcessValue)。
+            // 旧实现把 ScreenLayer 和 Property 也算控件 → 数目虚高 + 图层吸入全部子控件属性/动画。
+            int layerCount = doc.Descendants().Count(e => e.Name.LocalName == "Hmi.Screen.ScreenLayer");
+            int propCount = doc.Descendants().Count(e => e.Name.LocalName == "Hmi.Screen.Property");
             var objs = doc.Descendants()
                           .Where(e => e.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)
                                       && e.Name.LocalName != "Hmi.Screen.Screen"
-                                      && e.Name.LocalName != "Hmi.Screen.ScreenTemplate")
+                                      && e.Name.LocalName != "Hmi.Screen.ScreenTemplate"
+                                      && e.Name.LocalName != "Hmi.Screen.ScreenLayer"
+                                      && e.Name.LocalName != "Hmi.Screen.Property")
                           .ToList();
 
-            Console.WriteLine($"  控件总数: {objs.Count}");
+            Console.WriteLine($"  控件总数: {objs.Count}（不含 {layerCount} 个图层容器、{propCount} 个控件子属性ProcessValue）");
             Console.WriteLine();
 
             // 控件摘要列表（每行一个控件，结构化输出）
@@ -822,14 +913,16 @@ namespace TiaMcp
             {
                 var o = objs[i];
                 string type = o.Name.LocalName.Replace("Hmi.Screen.", "");
-                string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
-                string left = ChildText(o, "Left") ?? ChildText(o, "X") ?? "?";
-                string top = ChildText(o, "Top") ?? ChildText(o, "Y") ?? "?";
-                string w = ChildText(o, "Width") ?? "?";
-                string h = ChildText(o, "Height") ?? "?";
-                string backClr = ChildText(o, "BackColor") ?? ChildText(o, "BackgroundColor") ?? "-";
+                string oname = AttrText(o, "ObjectName") ?? AttrText(o, "Name") ?? "?";
+                string left = AttrText(o, "Left") ?? AttrText(o, "X") ?? "?";
+                string top = AttrText(o, "Top") ?? AttrText(o, "Y") ?? "?";
+                string w = AttrText(o, "Width") ?? "?";
+                string h = AttrText(o, "Height") ?? "?";
+                string backClr = AttrText(o, "BackColor") ?? AttrText(o, "BackgroundColor") ?? "-";
+                string parent = ParentContainer(o);
+                string parentTag = parent != null ? $"  ∈组 \"{parent}\"" : "";
 
-                Console.WriteLine($"  [{i + 1}] {type} \"{oname}\"");
+                Console.WriteLine($"  [{i + 1}] {type} \"{oname}\"{parentTag}");
                 Console.WriteLine($"      位置=({left},{top}) 大小={w}×{h} 背景色={backClr}");
             }
             Console.WriteLine();
@@ -842,23 +935,24 @@ namespace TiaMcp
                 Console.WriteLine($"\n  [{group.Key}] ({group.Count()} 个)");
                 foreach (var o in group)
                 {
-                    string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
-                    Console.WriteLine($"    ── {oname} ──");
+                    string oname = AttrText(o, "ObjectName") ?? AttrText(o, "Name") ?? "?";
+                    string parent = ParentContainer(o);
+                    Console.WriteLine(parent != null ? $"    ── {oname} (∈组 \"{parent}\") ──" : $"    ── {oname} ──");
 
-                    // 位置和大小
-                    string left = ChildText(o, "Left") ?? ChildText(o, "X");
-                    string top = ChildText(o, "Top") ?? ChildText(o, "Y");
-                    string w = ChildText(o, "Width");
-                    string h = ChildText(o, "Height");
+                    // 位置和大小(仅控件自身 AttributeList)
+                    string left = AttrText(o, "Left") ?? AttrText(o, "X");
+                    string top = AttrText(o, "Top") ?? AttrText(o, "Y");
+                    string w = AttrText(o, "Width");
+                    string h = AttrText(o, "Height");
                     if (left != null || top != null) Console.WriteLine($"       位置: ({left ?? "?"}, {top ?? "?"})");
                     if (w != null || h != null) Console.WriteLine($"       大小: {w ?? "?"} × {h ?? "?"}");
 
                     // 颜色属性
-                    string backClr = ChildText(o, "BackColor") ?? ChildText(o, "BackgroundColor");
-                    string altBackClr = ChildText(o, "AlternateBackColor");
-                    string foreClr = ChildText(o, "ForeColor") ?? ChildText(o, "ForegroundColor");
-                    string borderClr = ChildText(o, "BorderColor");
-                    string altBorderClr = ChildText(o, "AlternateBorderColor");
+                    string backClr = AttrText(o, "BackColor") ?? AttrText(o, "BackgroundColor");
+                    string altBackClr = AttrText(o, "AlternateBackColor");
+                    string foreClr = AttrText(o, "ForeColor") ?? AttrText(o, "ForegroundColor");
+                    string borderClr = AttrText(o, "BorderColor");
+                    string altBorderClr = AttrText(o, "AlternateBorderColor");
                     if (backClr != null) Console.WriteLine($"       背景色: {backClr}");
                     if (altBackClr != null) Console.WriteLine($"       替代背景色: {altBackClr}");
                     if (foreClr != null) Console.WriteLine($"       前景色: {foreClr}");
@@ -866,53 +960,48 @@ namespace TiaMcp
                     if (altBorderClr != null) Console.WriteLine($"       替代边框色: {altBorderClr}");
 
                     // 边框属性
-                    string borderW = ChildText(o, "BorderWidth");
-                    string dashType = ChildText(o, "DashType");
+                    string borderW = AttrText(o, "BorderWidth");
+                    string dashType = AttrText(o, "DashType");
                     if (borderW != null) Console.WriteLine($"       边框宽度: {borderW}");
                     if (dashType != null) Console.WriteLine($"       线型: {dashType}");
 
-                    // 字体属性（如果有）
-                    var fontEl = o.Descendants().FirstOrDefault(x => x.Name.LocalName == "Font" || x.Name.LocalName == "HmiFontPart");
-                    if (fontEl != null)
+                    // 字体属性:经典 HMI 字体存为 Hmi.Globalization.FontItem(FontFamily/FontSize/FontStyle)
+                    var fontItem = ScopedDescendants(o).FirstOrDefault(x => x.Name.LocalName == "Hmi.Globalization.FontItem");
+                    if (fontItem != null)
                     {
-                        string fontName = ChildText(fontEl, "FontName") ?? ChildText(fontEl, "Name");
-                        string fontSize = ChildText(fontEl, "Size");
-                        string bold = ChildText(fontEl, "Bold") ?? ChildText(fontEl, "Weight");
-                        string italic = ChildText(fontEl, "Italic");
-                        string underline = ChildText(fontEl, "Underline");
-                        string strikeout = ChildText(fontEl, "StrikeOut");
-                        Console.WriteLine($"       字体: {fontName ?? "?"} {fontSize ?? "?"}pt");
-                        if (bold != null && bold.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 粗体");
-                        if (italic != null && italic.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 斜体");
-                        if (underline != null && underline.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 下划线");
-                        if (strikeout != null && strikeout.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 删除线");
+                        string fam = AttrText(fontItem, "FontFamily");
+                        string size = AttrText(fontItem, "FontSize");
+                        string style = AttrText(fontItem, "FontStyle"); // 如 Regular/Bold/"Bold, Italic"
+                        string line = $"       字体: {fam ?? "?"} {size ?? "?"}pt";
+                        if (!string.IsNullOrEmpty(style) && !style.Equals("Regular", StringComparison.OrdinalIgnoreCase))
+                            line += $" [{style}]";
+                        Console.WriteLine(line);
                     }
 
-                    // 文本内容（如果有，完整输出）
-                    string text = ChildText(o, "Text");
-                    if (text != null)
-                    {
-                        Console.WriteLine($"       文本: \"{text}\"");
-                    }
+                    // 文本内容(经典 HMI 在 MultilingualText 正文里,去 body/p 包裹)
+                    string text = ControlText(o);
+                    if (text != null) Console.WriteLine($"       文本: \"{text}\"");
 
-                    // 变量绑定
-                    string tagRef = FindTagRef(o);
+                    // 变量绑定(仅过程值绑定,不含动画触发器变量)
+                    string tagRef = FindBoundTag(o);
                     if (tagRef != null) Console.WriteLine($"       绑定变量: {tagRef}");
 
                     // 透明度
-                    string opacity = ChildText(o, "Opacity");
+                    string opacity = AttrText(o, "Opacity");
                     if (opacity != null) Console.WriteLine($"       不透明度: {opacity}");
 
                     // 可见性
-                    string visible = ChildText(o, "Visible");
+                    string visible = AttrText(o, "Visible");
                     if (visible != null) Console.WriteLine($"       可见: {visible}");
 
                     // 旋转
-                    string rotation = ChildText(o, "RotationAngle") ?? ChildText(o, "Rotation");
+                    string rotation = AttrText(o, "RotationAngle") ?? AttrText(o, "Rotation");
                     if (rotation != null) Console.WriteLine($"       旋转角度: {rotation}°");
 
-                    // 圆角（矩形专用）
-                    var cornersEl = o.Descendants().FirstOrDefault(x => x.Name.LocalName == "Corners");
+                    // 圆角:标量 CornerRadius(矩形/按钮)或 Corners 元素(分角半径)
+                    string cornerRadius = AttrText(o, "CornerRadius");
+                    if (cornerRadius != null && cornerRadius != "0") Console.WriteLine($"       圆角半径: {cornerRadius}");
+                    var cornersEl = ScopedDescendants(o).FirstOrDefault(x => x.Name.LocalName == "Corners");
                     if (cornersEl != null)
                     {
                         string tl = ChildText(cornersEl, "TopLeftRadius");
@@ -923,10 +1012,10 @@ namespace TiaMcp
                             Console.WriteLine($"       圆角: TL={tl ?? "0"} TR={tr ?? "0"} BL={bl ?? "0"} BR={br ?? "0"}");
                     }
 
-                    // ★ 动画信息
+                    // ★ 动画信息(仅本控件自身)
                     PrintAnimations(o, oname);
 
-                    // ★ 事件信息
+                    // ★ 事件信息(仅本控件自身)
                     PrintEvents(o, oname);
                 }
             }
@@ -936,15 +1025,16 @@ namespace TiaMcp
             Console.WriteLine("  === 布局统计 ===");
             Console.WriteLine($"  • 控件类型分布: {string.Join(", ", grouped.Select(g => $"{g.Key}×{g.Count()}"))}");
 
-            // 检测重叠控件（完整输出，不截断）
+            // 检测重叠控件(几何取自控件自身 AttributeList);可能很多(背景矩形覆盖众控件),故只列前若干对
             var overlapping = DetectOverlappingControls(objs);
             if (overlapping.Count > 0)
             {
-                Console.WriteLine($"  • 重叠控件: {overlapping.Count} 对");
-                foreach (var pair in overlapping)
-                {
+                const int cap = 20;
+                Console.WriteLine($"  • 重叠控件: {overlapping.Count} 对（含背景框与其上控件的正常覆盖）");
+                foreach (var pair in overlapping.Take(cap))
                     Console.WriteLine($"    - {pair.Item1} 与 {pair.Item2}");
-                }
+                if (overlapping.Count > cap)
+                    Console.WriteLine($"    …其余 {overlapping.Count - cap} 对略(可导出 XML 自行核对)");
             }
             else
             {
@@ -952,7 +1042,7 @@ namespace TiaMcp
             }
         }
 
-        // 检测重叠控件
+        // 检测重叠控件(几何只取控件自身 AttributeList,不递归子控件)
         private static List<Tuple<string, string>> DetectOverlappingControls(List<XElement> objs)
         {
             var result = new List<Tuple<string, string>>();
@@ -960,11 +1050,11 @@ namespace TiaMcp
 
             foreach (var o in objs)
             {
-                string name = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
-                if (!int.TryParse(ChildText(o, "Left") ?? ChildText(o, "X"), out int left)) continue;
-                if (!int.TryParse(ChildText(o, "Top") ?? ChildText(o, "Y"), out int top)) continue;
-                if (!int.TryParse(ChildText(o, "Width"), out int width)) continue;
-                if (!int.TryParse(ChildText(o, "Height"), out int height)) continue;
+                string name = AttrText(o, "ObjectName") ?? AttrText(o, "Name") ?? "?";
+                if (!int.TryParse(AttrText(o, "Left") ?? AttrText(o, "X"), out int left)) continue;
+                if (!int.TryParse(AttrText(o, "Top") ?? AttrText(o, "Y"), out int top)) continue;
+                if (!int.TryParse(AttrText(o, "Width"), out int width)) continue;
+                if (!int.TryParse(AttrText(o, "Height"), out int height)) continue;
                 rects.Add(Tuple.Create(name, left, top, width, height));
             }
 

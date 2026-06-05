@@ -553,14 +553,17 @@
   - 控件级事件：Click（点击跳转画面）、Press（按下触发动作）等
   - 画面级事件：ClearScreen（清屏）、GenerateScreen（生成画面）等
   - 含函数名+类型+参数（链接值如画面名/变量名、字面值如数值）
-- **⚠ 行为特征（非 Bug，解析时需理解）**：
-  1. **动画"继承"聚合**：动画统计使用 `Descendants()` 搜索所有 `Hmi.Dynamic.*` 后代。Group/ScreenLayer 的动画数 = 自身 + 所有子控件之和。同一动画在父容器和子控件上各出现一次——阅读时勿重复计数。
-  2. **控件计数含嵌套 Property**：`Hmi.Screen.Property`（ProcessValue）是 IOField/Bar/DateTimeField 的子属性，计入控件总数和摘要列表。初次阅读可能觉得控件偏多，属正常。
-  3. **Group 无自身位置/大小**：Group 的位置/大小取自其第一个子控件（通常是 Rectangle），是合理的近似。
-- **输出示例**：
+- **属性归属准确（2026-06-05 重写）**：每个控件的位置/大小/颜色/字体/文本/动画/事件**只取它自身**（限定在控件直接的 `<AttributeList>` 与自身作用域内解析，遇到嵌套子控件即剪枝），**不会再把子控件的值误算到父容器上**。具体：
+  1. **控件总数只数真实控件**：已剔除结构性图层 `ScreenLayer` 和控件子属性 `Property`（ProcessValue，IOField/Bar 的过程值节点）。计数行会标注「不含 N 个图层容器、M 个控件子属性ProcessValue」。
+  2. **Group 内控件单列并标注归属**：嵌套在 Group 里的控件照常单列，并加 `∈组 "X"` 标注；父 Group 的动画/事件只统计它自己的，不再 = 自身+所有子控件之和。
+  3. **绑定变量 vs 动画触发器分离**：「绑定变量」仅指过程值（ProcessValue）绑定；动画的触发器变量在该控件的「动画」段单列，不再被误报成「绑定变量」。
+  4. **字体/文本解析已修正**：字体取自 `Hmi.Globalization.FontItem`（FontFamily/FontSize/FontStyle）；文本取自 `MultilingualText` 正文（去 `<body><p>` 包裹）。
+  5. **画面号字段为 `Number`**（旧实现误用 `ScreenNumber` 恒显示 `#?`，已修；模板无画面号仍显示 `#?`）。
+  6. **重叠对仅列前 20 对**：背景框正常覆盖其上控件会产生大量「重叠」，超出 20 对的标注「…其余 N 对略」，避免污染上下文。
+- **输出示例**（实测 `0010 车体状态`，已与 `hmi-export-screen` 导出 XML 交叉验证一致）：
   ```
   ==== HMI_1 · 画面布局 0010 车体状态 ====
-    画面: 0010 车体状态 (#?)
+    画面: 0010 车体状态 (#34)
     尺寸: 800 x 480 (DIU)
     背景色: 232, 237, 243
 
@@ -568,45 +571,51 @@
       [ClearScreen] → SetTag(SystemFunction) Tag=Tag_ScreenNumber, Value=0
       [GenerateScreen] → SetTag(SystemFunction) Tag=Tag_ScreenNumber, Value=10
 
-    控件总数: 72
+    控件总数: 59（不含 1 个图层容器、12 个控件子属性ProcessValue）
+
+    === 控件摘要 ===
+    [5] Circle "圆_1"
+        位置=(408,77) 大小=32×32 背景色=217, 217, 217
+    ...
 
     === 详细属性 ===
-    [Circle] (5 个)
-      ── 圆_1 ──
-         位置: (408, 77)
-         大小: 32 × 32
-         背景色: 217, 217, 217
-         绑定变量: HMI_PLC_Interactive_Data_AGV_Ready
+    [Button] (6 个)
+      ── 模板_按钮_8 ──
+         位置: (408, 330)
+         大小: 112 × 36
+         字体: 宋体 16pt [Bold]
+         文本: "通讯状态"
+         圆角半径: 3
          ── 动画 (1 个) ──
            [RangeAppearanceAnimation]
-             触发器: RangeTag → 变量: HMI_PLC_Interactive_Data_AGV_Ready
-             范围 [0 ~ 0]:
-               背景色: 222, 219, 222
-             范围 [1 ~ 1]:
-               背景色: 0, 255, 0
-      ── 圆_2 ──
-         ...
-         ── 动画 (1 个) ──
-           [VisibilityAnimation] 范围=[1~1] 值在范围内时隐藏
-             触发器: VisibilityTag → 变量: EmergencyStop02
-
-    [Button] (6 个)
-      ── 模板_按钮_4 ──
-         文本: "车体状态"
+             触发器: RangeTag → 变量: Tag_ScreenNumber
+             范围 [20 ~ 20]:
+               背景色: 206, 255, 255
+               前景色: 0, 0, 255
          ── 事件 (1 个) ──
            [Click]
              函数: ActivateScreen (SystemFunction)
-               参数: Screen name = 0010 车体状态
+               参数: Screen name = 0020 通讯状态
+
+    [IOField] (12 个)
+      ── I/O 域_13 ──
+         位置: (101, 183)
+         大小: 49 × 26
+         字体: 宋体 12pt [Bold]
+         绑定变量: DirAxis_Common_Data_V12_Current_Angle
 
     === 布局统计 ===
-    • 控件类型分布: Circle×5, Button×6, IOField×12, ...
-    • 重叠控件: 无
+    • 控件类型分布: Button×6, Circle×6, GraphicView×6, IOField×12, Rectangle×18, TextField×11
+    • 重叠控件: 75 对（含背景框与其上控件的正常覆盖）
+      - 卡片_整车态势 与 图形视图_6
+      ...
+      …其余 55 对略(可导出 XML 自行核对)
   ```
 - **退出码**：0 成功；1 找不到画面。
 
 ### `hmi-read-template-layout <模板名>` 🆕
-- **用途**：模板画面（母版）完整视觉布局 + 动态行为。与 `hmi-read-screen-layout` 相同的信息，但针对模板画面。**建议优先使用此命令而非 `hmi-read-templates`。**
-- **输出格式**：同 `hmi-read-screen-layout`。
+- **用途**：模板画面（母版）完整视觉布局 + 动态行为。与 `hmi-read-screen-layout` **相同的信息和解析精度**，但针对模板画面。**建议优先使用此命令而非 `hmi-read-templates`。**
+- **输出格式**：同 `hmi-read-screen-layout`（属性归属同样准确，控件总数同样剔除图层/ProcessValue）。模板无画面号，画面号显示 `#?`。
 - **退出码**：0 成功；1 找不到模板。
 
 ### `hmi-find-unused-tags` 🆕
