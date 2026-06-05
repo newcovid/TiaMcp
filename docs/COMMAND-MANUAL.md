@@ -553,6 +553,10 @@
   - 控件级事件：Click（点击跳转画面）、Press（按下触发动作）等
   - 画面级事件：ClearScreen（清屏）、GenerateScreen（生成画面）等
   - 含函数名+类型+参数（链接值如画面名/变量名、字面值如数值）
+- **⚠ 行为特征（非 Bug，解析时需理解）**：
+  1. **动画"继承"聚合**：动画统计使用 `Descendants()` 搜索所有 `Hmi.Dynamic.*` 后代。Group/ScreenLayer 的动画数 = 自身 + 所有子控件之和。同一动画在父容器和子控件上各出现一次——阅读时勿重复计数。
+  2. **控件计数含嵌套 Property**：`Hmi.Screen.Property`（ProcessValue）是 IOField/Bar/DateTimeField 的子属性，计入控件总数和摘要列表。初次阅读可能觉得控件偏多，属正常。
+  3. **Group 无自身位置/大小**：Group 的位置/大小取自其第一个子控件（通常是 Rectangle），是合理的近似。
 - **输出示例**：
   ```
   ==== HMI_1 · 画面布局 0010 车体状态 ====

@@ -4,7 +4,15 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**hmi-read-screen-layout / hmi-read-template-layout 新增动画+事件解析**；MCP 工具描述更新建议 AI 优先使用 layout 命令）
+最近更新：2026-06-05（**layout 命令交叉验证通过 + 行为特征写入 MCP 描述和手册**）
+
+> **2026-06-05 layout 命令交叉验证 + 行为特征文档化**：
+> - **验证**：选取 4 个测试对象（0001_MainPicture、0010 车体状态、模板_1、全局画面），分别运行 `hmi-read-*-layout` 和 `hmi-export-*`，将 layout 解析输出与原始 XML 逐项对比。**全部通过**：画面尺寸、背景色、控件位置/大小/颜色、文本、变量绑定、可见性、边框、事件（函数名+类型+参数）、动画（触发器+范围值+颜色+可见性）均与 XML 精确匹配。
+> - **行为特征发现**（非 Bug，需理解）：
+>   1. 动画"继承"聚合：`PrintAnimations` 用 `Descendants()` 搜索，Group/ScreenLayer 的动画数 = 自身 + 所有子控件之和，同一动画在父子各出现一次
+>   2. 控件计数含嵌套 Property（ProcessValue，IOField/Bar 的子属性）
+>   3. Group 无自身位置/大小，取第一个子控件的值
+> - **文档更新**：行为特征写入 `McpServer.cs` 的 MCP 工具描述 + `docs/COMMAND-MANUAL.md` 的命令说明，确保 0 上下文 AI 调用时能精确理解输出含义
 
 > **2026-06-05 hmi-read-screen-layout / hmi-read-template-layout 新增动画+事件解析**：
 > - **问题**：布局命令只输出静态视觉属性（位置/大小/颜色/字体），缺少动画和事件信息。动画（如 RangeAppearanceAnimation 根据变量值变色、VisibilityAnimation 控制可见性）和事件（如 Click 跳转画面、Press 触发动作）直接影响视觉表现，AI 无法理解画面的动态行为。
