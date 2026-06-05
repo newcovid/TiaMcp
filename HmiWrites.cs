@@ -26,7 +26,7 @@ namespace TiaMcp
         {
             if (listFile == null || !File.Exists(listFile)) { Console.WriteLine("找不到清单文件: " + listFile); return 1; }
             var lines = ParseLines(listFile);
-            if (lines.Count == 0) { Console.WriteLine("清单为空（每行: 表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型]）。"); return 1; }
+            if (lines.Count == 0) { Console.WriteLine("清单为空（每行: 表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型] | [采集周期]）。访问模式=Absolute 时第4列填绝对地址(如 %M0.0)且第7列[类型]必填。"); return 1; }
 
             using (var s = TiaSession.AttachFirst())
             {
@@ -75,9 +75,15 @@ namespace TiaMcp
                         string access = (f.Length > 4 && f[4].Length > 0) ? f[4] : "Symbolic";
                         string comment = (f.Length > 5 && f[5].Length > 0) ? f[5] : null;
                         string typeOverride = (f.Length > 6 && f[6].Length > 0) ? f[6] : null;
+                        string cycle = (f.Length > 7 && f[7].Length > 0) ? f[7] : null; // 采集周期名(如 "1 s"/"100 ms"/"500 ms"),空=沿用模板/现值
+                        bool absolute = string.Equals(access, "Absolute", StringComparison.OrdinalIgnoreCase);
+                        // 绝对地址模式: 第4列 plc 当成 LogicalAddress(如 %M0.0/%DB1.DBX0.0),无 PLC 符号可解析类型,故必须给[类型]列
+                        if (absolute && typeOverride == null)
+                        { Line("错", name + " 访问模式=Absolute 时第4列为绝对地址,必须在第7列[类型]显式给出 S7 类型(如 Bool/Int/Real)"); errors++; continue; }
                         // 变量名含 . 或 \ 都会致导入失败（plc 字段含 . 是合法的 DB.成员，不在此校验）
                         if (name.Contains("\\") || name.Contains("."))
                         { Line("错", name + " 变量名含非法字符(. 或 \\)，导入会失败"); errors++; continue; }
+                        string bindLabel = absolute ? $"addr={plc}" : $"plc={plc}"; // 日志按模式显示
 
                         XElement existing = tagEls.FirstOrDefault(te => string.Equals(TagName(te), name, StringComparison.OrdinalIgnoreCase));
                         if (existing != null)
@@ -87,8 +93,8 @@ namespace TiaMcp
                             { Line("错", name + " 现有变量无 PLC 绑定结构(LinkList/ControllerTag/Connection)，无法改绑"); errors++; continue; }
                             // 改绑同样要按新 PLC 符号重定类型(否则沿用旧类型与新符号不符,同根因)
                             string note = SetTagType(existing, plc, typeOverride, plcs, dbCache, ref donorIndex, hmi);
-                            if (!dryRun) { SetBinding(existing, conn, plc, access); if (comment != null) SetComment(existing, comment); changed = true; }
-                            Line("改", $"{name}  conn={conn} plc={plc}  {note}"); updated++;
+                            if (!dryRun) { SetBinding(existing, conn, plc, access); if (comment != null) SetComment(existing, comment); if (cycle != null) SetLinkName(existing, "AcquisitionCycle", cycle); changed = true; }
+                            Line("改", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}"); updated++;
                         }
                         else
                         {
@@ -101,9 +107,10 @@ namespace TiaMcp
                             // 关键修复:克隆继承模板(本表首个变量)的类型四元组,必须按所绑 PLC 符号真实类型重写,否则类型不符被拒。
                             string note = SetTagType(clone, plc, typeOverride, plcs, dbCache, ref donorIndex, hmi);
                             if (comment != null) SetComment(clone, comment);
+                            if (cycle != null) SetLinkName(clone, "AcquisitionCycle", cycle);
                             RenumberIds(clone, ref maxId);
                             if (!dryRun) { template.Parent.Add(clone); changed = true; }
-                            Line("建", $"{name}  conn={conn} plc={plc}  {note}"); created++;
+                            Line("建", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}"); created++;
                         }
                     }
 
@@ -160,16 +167,23 @@ namespace TiaMcp
             return ll.Elements().Any(e => e.Name.LocalName == "ControllerTag")
                 && ll.Elements().Any(e => e.Name.LocalName == "Connection");
         }
-        private static void SetBinding(XElement tagEl, string conn, string plc, string access)
+        // 绑定 PLC: symbolic 模式写 ControllerTag(符号名)+清空 LogicalAddress;
+        // absolute 模式写 LogicalAddress(plcOrAddr 当地址)+清空 ControllerTag。两模式都写 Connection。
+        private static void SetBinding(XElement tagEl, string conn, string plcOrAddr, string access)
         {
+            bool absolute = string.Equals(access, "Absolute", StringComparison.OrdinalIgnoreCase);
             var al = tagEl.Elements().First(e => e.Name.LocalName == "AttributeList");
             var am = al.Elements().FirstOrDefault(e => e.Name.LocalName == "AddressAccessMode");
             if (am != null) am.Value = access;
+            var la = al.Elements().FirstOrDefault(e => e.Name.LocalName == "LogicalAddress");
+            if (la != null) la.Value = absolute ? plcOrAddr : "";
             var ll = tagEl.Elements().FirstOrDefault(e => e.Name.LocalName == "LinkList");
             if (ll != null)
             {
                 var ct = ll.Elements().FirstOrDefault(e => e.Name.LocalName == "ControllerTag");
-                if (ct != null) ct.Elements().First(e => e.Name.LocalName == "Name").Value = plc;
+                // 绝对模式无 PLC 符号:必须整段移除 ControllerTag 链接,空 Name 的开放链接会被 TIA 拒("open link is empty")。
+                if (absolute) ct?.Remove();
+                else if (ct != null) ct.Elements().First(e => e.Name.LocalName == "Name").Value = plcOrAddr;
                 var cn = ll.Elements().FirstOrDefault(e => e.Name.LocalName == "Connection");
                 if (cn != null) cn.Elements().First(e => e.Name.LocalName == "Name").Value = conn;
             }

@@ -509,16 +509,21 @@
 - **退出码**：0。
 
 ### `hmi-read-tags [--table 名] [--filter 子串]`
-- **用途**：导出变量表 XML 解析，出 名/Coding(类型)/连接/绑定的 PLC 变量。
-- **输出示例**：
+- **用途**：导出变量表 XML 解析，出每个变量的 名/类型(PLC侧→HMI侧/字节宽)/访问模式/采集周期/连接/绑定的 PLC 符号(或绝对地址)/注释/来源注释。
+  - **来源注释**：经典 HMI 不导出，是所绑 PLC 符号注释的镜像。本命令据 `ControllerTag` 主动抓 PLC 侧注释——DB 成员取 `Member/Comment/MultiLanguageText`、裸 PLC 变量取 `PlcTag.Comment`；无 PLC 绑定（绝对地址变量）则无来源注释。DB 导出经 %TEMP% 校验明文并缓存（同一 DB 只导一次）。
+- **输出示例**（实测）：
   ```
   ==== HMI 设备: HMI_1 · 变量 ====
-    [表] Demo_Tags
-        Tag_Demo                            IEEE754Float   conn=Connection_1 ←PLC DB_Demo.SOC
+    [表] 默认变量表
+        BatteryDataBlock_Battery_SOC   Real→Real/4B  访问=Symbolic 周期=1 s  conn=HMI_连接 ←PLC BatteryDataBlock.Battery_SOC
+            注释=-  来源注释=电池电量
+        BatteryDataBlock_Charging overcurrent  Word→UInt/2B  访问=Symbolic 周期=1 s  conn=HMI_连接 ←PLC BatteryDataBlock."Charging overcurrent"
+            注释=-  来源注释=充电过流
     -- 显示 14 个变量 --
   ```
+  - 仅当 注释 或 来源注释 非空时才输出第二行（带绑定却无 PLC 注释的变量不打第二行）。绝对地址变量显示 `地址 %M0.0` 取代 `←PLC ...`。
 - **退出码**：0。
-- **MCP 备注**：无过滤时 562 变量全打印（**污染**）；建议默认须给 `--table`/`--filter`，否则只回各表计数。
+- **MCP 备注**：无过滤时全表变量全打印（**污染**）；建议默认须给 `--table`/`--filter`，否则只回各表计数。来源注释解析会按需导出相关 DB（已缓存，单 DB 一次）。
 
 ### `hmi-read-screens`
 - **用途**：画面文件夹树（只名字；画面号只在导出 XML 里）。
@@ -692,10 +697,13 @@
 > 回调标记：`[建]/[改]/[删]/[跳]/[错]`。建/改走 导出→改XML→Import(Override) 克隆模板；删走 API。
 
 ### `hmi-write-tags <清单文件> [--dry-run]`
-- **用途**：克隆模板建/改 HMI 符号变量（绑定 PLC 符号）。**变量数据类型据所绑 PLC 符号自动解析定型，无需手填**。
-- **输入**：清单行 `表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型]`。
+- **用途**：克隆模板建/改 HMI 变量（符号绑定或绝对地址）。**变量数据类型据所绑 PLC 符号自动解析定型，无需手填**。
+- **输入**：清单行 `表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型] | [采集周期]`。
   - `PLC符号` 支持：`DB.成员`、`DB."含空格成员"`（引号包裹）、`DB.dtl成员.SECOND`（DTL 子字段）、裸 PLC 变量名。
   - `[类型]`（第 7 列，**通常留空**）：仅当 PLC 符号自动解析失败（逐条结果出现 `[警告]`，多见于 UDT 成员/受保护 DB/图形 DB）时，才显式给 S7 类型兜底：`Bool/SInt/USInt/Byte/Char/Int/UInt/Word/DInt/UDInt/DWord/Real/LReal/DTL`。
+  - `[采集周期]`（第 8 列，**通常留空=沿用模板/现值**）：周期名字符串，如 `1 s`/`500 ms`/`100 ms`，**必须是 HMI 工程里已定义的周期名**（否则导入被拒）。写法与连接/类型同为 LinkList 链接。
+  - **绝对地址变量**：`[访问模式]` 列填 `Absolute` 时，**第 4 列改填绝对地址**（如 `%M0.0`、`%DB1.DBX0.0`），且 `[类型]` 列**必填**（绝对模式无 PLC 符号可自动解析类型）。底层会移除 `ControllerTag` 链接、写 `LogicalAddress`、`AddressAccessMode=Absolute`。
+  - **不支持的字段**（TIA 机制限制，已写死防幻觉）：① **重命名**——按名匹配，改名会被当成新建另一变量，不做以防引用错乱；② **PLC 名称**——经典 HMI 变量无此字段，由 `连接` 隐含（改连接即改 PLC 归属）；③ **来源注释**——它是所绑 PLC 符号注释的只读镜像，不随变量导出，要改去改 PLC 符号注释（读侧 `hmi-read-tags` 会自动抓取显示）。
 - **输出示例**（每条结果尾部回显自动解析出的类型四元组）：
   ```
   目标 HMI: HMI_1  [DRY-RUN 预演，不写入]

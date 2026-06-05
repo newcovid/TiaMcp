@@ -3,7 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Xml.Linq;
+using System.Text.RegularExpressions;
 using Siemens.Engineering;             // ExportOptions
+using Siemens.Engineering.SW;          // PlcSoftware
+using Siemens.Engineering.SW.Blocks;   // PlcBlock, PlcBlockGroup
+using Siemens.Engineering.SW.Tags;     // PlcTag, PlcTagTable...
 using Siemens.Engineering.Hmi.Screen;  // Screen, ScreenSystemFolder, ScreenUserFolder
 using Siemens.Engineering.Hmi.Tag;     // TagTable, TagSystemFolder, TagUserFolder, Tag
 using Siemens.Engineering.Hmi.Communication; // Connection
@@ -169,6 +173,9 @@ namespace TiaMcp
             {
                 var hmis = s.FindHmis();
                 if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                // 来源注释 = 所绑 PLC 符号的注释,代码内部按符号抓取(无绑定则空)。需 PLC 列表 + DB 导出缓存。
+                var plcs = s.FindPlcs();
+                var dbCache = new Dictionary<string, XDocument>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kv in hmis)
                 {
                     Console.WriteLine($"==== HMI 设备: {kv.Key} · 变量 ====");
@@ -184,7 +191,7 @@ namespace TiaMcp
                             if (File.Exists(tmp)) File.Delete(tmp);
                             t.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
                             string xml = IoUtil.ReadPlaintext(tmp);
-                            shown += PrintTagsFromXml(xml, nameFilter);
+                            shown += PrintTagsFromXml(xml, nameFilter, plcs, dbCache);
                         }
                         catch (Exception ex)
                         {
@@ -200,10 +207,13 @@ namespace TiaMcp
             }
         }
 
-        // 解析变量表导出 XML 里的变量。变量元素=<Hmi.Tag.Tag>。
-        // 经典 HMI 无显式 DataType 元素:类型由 <Coding>(如 IEEE754Float=Real) 表示;
-        // LinkList 下 <Connection> 是 HMI 连接、<ControllerTag> 是绑定的 PLC 变量。
-        private static int PrintTagsFromXml(string xml, string nameFilter)
+        // 解析变量表导出 XML 里的变量。变量元素=<Hmi.Tag.Tag>。各字段位置(实测 V18 导出):
+        //   AttributeList: Name / AddressAccessMode(Symbolic|Absolute) / Length / LogicalAddress(绝对地址,符号模式空)
+        //   LinkList(链接): Connection(HMI连接) / ControllerTag(PLC符号) / DataType(PLC侧S7类型) / HmiDataType(HMI侧) / AcquisitionCycle(采集周期名)
+        //   ObjectList: MultilingualText[CompositionName=Comment] = 变量自身注释
+        //   来源注释: 经典 HMI 不导出,是所绑 PLC 符号注释的镜像 —— 这里据 ControllerTag 主动抓 PLC 符号注释。
+        private static int PrintTagsFromXml(string xml, string nameFilter,
+            List<KeyValuePair<string, PlcSoftware>> plcs, Dictionary<string, XDocument> dbCache)
         {
             var doc = XDocument.Parse(xml);
             var tagEls = doc.Descendants().Where(e => e.Name.LocalName == "Hmi.Tag.Tag").ToList();
@@ -212,13 +222,40 @@ namespace TiaMcp
             {
                 string name = ChildText(te, "Name") ?? "";
                 if (nameFilter != null && name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                string coding = ChildText(te, "Coding") ?? "?";       // 编码≈类型:IEEE754Float=Real 等
+                string access = AttrText(te, "AddressAccessMode") ?? "?";
+                string plcType = LinkName(te, "DataType");
+                string hmiType = LinkName(te, "HmiDataType");
+                string coding = ChildText(te, "Coding") ?? "?";       // 编码:IEEE754Float/Binary 等
+                string len = AttrText(te, "Length");
+                string typeStr = plcType != null
+                    ? $"{plcType}→{hmiType ?? "?"}{(len != null ? "/" + len + "B" : "")}"
+                    : $"{coding}{(len != null ? "/" + len + "B" : "")}"; // 无 PLC 侧类型(罕见)回退编码
                 string conn = LinkName(te, "Connection") ?? "-";
-                string plc = LinkName(te, "ControllerTag") ?? "-";     // 绑定的 PLC 变量
-                Console.WriteLine($"      {name,-38} {coding,-14} conn={conn,-10} ←PLC {plc}");
+                string plc = LinkName(te, "ControllerTag");            // 绑定的 PLC 符号(绝对模式为空)
+                string addr = AttrText(te, "LogicalAddress");          // 绝对地址(符号模式空)
+                string cycle = LinkName(te, "AcquisitionCycle") ?? "-";
+                string comment = OwnComment(te);                       // 变量自身注释
+                string srcComment = plc != null ? ResolveSourceComment(plcs, plc, dbCache) : null; // 来源注释=PLC符号注释
+
+                string bind = access.Equals("Absolute", StringComparison.OrdinalIgnoreCase)
+                    ? $"地址 {addr ?? "-"}"
+                    : $"←PLC {plc ?? "-"}";
+                Console.WriteLine($"      {name,-38} {typeStr,-16} 访问={access,-9} 周期={cycle,-7} conn={conn,-10} {bind}");
+                if (!string.IsNullOrEmpty(comment) || !string.IsNullOrEmpty(srcComment))
+                    Console.WriteLine($"          注释={(string.IsNullOrEmpty(comment) ? "-" : comment)}  来源注释={(string.IsNullOrEmpty(srcComment) ? "-" : srcComment)}");
                 shown++;
             }
             return shown;
+        }
+
+        // 取变量自身注释: ObjectList/MultilingualText[CompositionName=Comment] 首个语言项 Text。
+        private static string OwnComment(XElement tagEl)
+        {
+            var ol = tagEl.Elements().FirstOrDefault(e => e.Name.LocalName == "ObjectList");
+            var mt = ol?.Elements().FirstOrDefault(e => e.Name.LocalName == "MultilingualText"
+                        && e.Attribute("CompositionName")?.Value == "Comment");
+            var text = mt?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Text" && !string.IsNullOrWhiteSpace(e.Value));
+            return text?.Value.Trim();
         }
 
         // 取 <Hmi.Tag.Tag> 下某 LinkList 子节点(Connection/ControllerTag) 的 Name
@@ -1103,7 +1140,118 @@ namespace TiaMcp
             return result;
         }
 
-        // [接入点-后续方法]
+        // ===== 来源注释解析:据所绑 PLC 符号抓 PLC 侧注释(DB成员 Comment 或裸PLC变量 Comment) =====
+        // 符号形如 DB.成员 / DB."含空格成员" / DB.struct.成员 / 裸PLC变量名。解析不到返回 null。
+        // DB 导出经 %TEMP% 校验明文并缓存(同一 DB 只导一次),与 hmi-write-tags 的类型解析同套路。
+        private static string ResolveSourceComment(List<KeyValuePair<string, PlcSoftware>> plcs, string symbol, Dictionary<string, XDocument> dbCache)
+        {
+            if (plcs == null || string.IsNullOrWhiteSpace(symbol)) return null;
+            var segs = SplitSymbol(symbol);
+            if (segs.Count == 0) return null;
+            if (segs.Count == 1) return FindFlatPlcTagComment(plcs, segs[0]); // 裸 PLC 变量
+
+            var doc = GetDbXmlCached(plcs, segs[0], dbCache);
+            if (doc == null) return FindFlatPlcTagComment(plcs, symbol);      // 兜底:整体当带点变量名(罕见)
+
+            var sectionsEl = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "Sections");
+            if (sectionsEl == null) return null;
+            var members = sectionsEl.Elements().Where(x => x.Name.LocalName == "Section")
+                          .SelectMany(sec => sec.Elements().Where(m => m.Name.LocalName == "Member")).ToList();
+            XElement mem = null;
+            for (int i = 1; i < segs.Count; i++)
+            {
+                string seg = StripArrayIndex(segs[i]);
+                mem = members.FirstOrDefault(m => string.Equals((string)m.Attribute("Name"), seg, StringComparison.OrdinalIgnoreCase));
+                if (mem == null) return null;
+                if (i < segs.Count - 1) members = mem.Elements().Where(x => x.Name.LocalName == "Member").ToList(); // 下钻内联 struct
+            }
+            return MemberComment(mem);
+        }
+
+        // DB 导出里成员注释: Member/Comment/MultiLanguageText(注意是单数 MultiLanguage,与 HMI 侧 MultilingualText 拼写不同)。
+        private static string MemberComment(XElement member)
+        {
+            var cmt = member?.Elements().FirstOrDefault(x => x.Name.LocalName == "Comment");
+            var txt = cmt?.Descendants().FirstOrDefault(x => x.Name.LocalName == "MultiLanguageText" && !string.IsNullOrWhiteSpace(x.Value));
+            return txt?.Value.Trim();
+        }
+
+        // 按引号边界拆符号路径(TIA 用 "..." 包特殊字符标识符);各段去引号、丢空段。
+        private static List<string> SplitSymbol(string s)
+        {
+            var res = new List<string>(); var sb = new System.Text.StringBuilder(); bool q = false;
+            foreach (char c in s ?? "")
+            {
+                if (c == '"') { q = !q; continue; }
+                if (c == '.' && !q) { res.Add(sb.ToString()); sb.Clear(); continue; }
+                sb.Append(c);
+            }
+            res.Add(sb.ToString());
+            return res.Where(x => x.Length > 0).ToList();
+        }
+        private static string StripArrayIndex(string seg) => Regex.Replace(seg ?? "", @"\[.*\]$", "");
+
+        private static XDocument GetDbXmlCached(List<KeyValuePair<string, PlcSoftware>> plcs, string dbName, Dictionary<string, XDocument> cache)
+        {
+            if (cache.TryGetValue(dbName, out var cached)) return cached;
+            PlcBlock blk = null;
+            foreach (var kv in plcs) { blk = FindBlockByName(kv.Value.BlockGroup, dbName); if (blk != null) break; }
+            if (blk == null) { cache[dbName] = null; return null; }
+            string tmp = IoUtil.NewTempFile(".xml");
+            try
+            {
+                if (File.Exists(tmp)) File.Delete(tmp);
+                blk.Export(new FileInfo(tmp), ExportOptions.None);
+                var doc = XDocument.Parse(IoUtil.ReadPlaintext(tmp));
+                cache[dbName] = doc; return doc;
+            }
+            catch (Exception ex) { cache[dbName] = null; Logger.Error("read-tags source-comment db " + dbName, ex); return null; }
+            finally { try { File.Delete(tmp); } catch { } }
+        }
+        private static PlcBlock FindBlockByName(PlcBlockGroup group, string name)
+        {
+            foreach (PlcBlock b in group.Blocks)
+                if (string.Equals(b.Name, name, StringComparison.OrdinalIgnoreCase)) return b;
+            foreach (PlcBlockGroup sub in group.Groups)
+            {
+                var found = FindBlockByName(sub, name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+        private static string FindFlatPlcTagComment(List<KeyValuePair<string, PlcSoftware>> plcs, string name)
+        {
+            foreach (var kv in plcs)
+            {
+                var grp = kv.Value.TagTableGroup;
+                string c = SearchTagComment(grp.TagTables, grp.Groups, name);
+                if (c != null) return c;
+            }
+            return null;
+        }
+        private static string SearchTagComment(PlcTagTableComposition tables, PlcTagTableUserGroupComposition groups, string name)
+        {
+            foreach (PlcTagTable tt in tables)
+                foreach (PlcTag tag in tt.Tags)
+                    if (string.Equals(tag.Name, name, StringComparison.OrdinalIgnoreCase)) return PlcTagComment(tag);
+            foreach (PlcTagTableUserGroup g in groups)
+            {
+                string r = SearchTagComment(g.TagTables, g.Groups, name);
+                if (r != null) return r;
+            }
+            return null;
+        }
+        private static string PlcTagComment(PlcTag tag)
+        {
+            try
+            {
+                var ml = tag.Comment;
+                var item = ml?.Items.FirstOrDefault();
+                string t = item?.Text;
+                return string.IsNullOrWhiteSpace(t) ? null : t.Trim();
+            }
+            catch { return null; }
+        }
 
         private static string Safe(Func<object> f)
         {

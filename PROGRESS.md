@@ -4,7 +4,17 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**hmi-write-tags 类型继承 bug 修复：变量类型按所绑 PLC 符号自动定型**）
+最近更新：2026-06-05（**HMI 变量字段补全：采集周期(读写)、来源注释(读)、绝对地址(写) — 已端到端实测**）
+
+> **2026-06-05 HMI 变量字段补全（建/改/读全路径已端到端实测）**：
+> - **需求（用户）**：HMI 变量的 名称/数据类型/连接/PLC名称/PLC变量/地址/访问模式/**采集周期**/**来源注释**/注释 应都能读写增删。审计发现旧 `hmi-write-tags` 仅 7 列（表名/变量名/连接/PLC符号/[访问]/[注释]/[类型]），**采集周期完全缺失**（读侧 `hmi-read-tags` 也不显示）；来源注释、绝对地址也缺。
+> - **验证元素名（实测真实导出钉死）**：① 采集周期 = `LinkList/AcquisitionCycle TargetID="@OpenLink"/Name`（值如 `1 s`，须是已定义周期名），结构同 Connection/DataType；② 绝对地址 = AttributeList 的 `AddressAccessMode=Absolute` + `LogicalAddress`（符号模式空），且**绝对模式必须移除 `ControllerTag` 链接**（留空 Name 会被 TIA 拒 "open link is empty"——实测踩中）；③ 来源注释在 HMI 变量导出里**不存在**，是所绑 PLC 符号注释的镜像——DB 成员注释在 `Member/Comment/MultiLanguageText`（单数 MultiLanguage）、裸变量在 `PlcTag.Comment`。
+> - **实现**：
+>   - `hmi-read-tags`（**已实测通过**）：输出补 访问模式/类型(PLC→HMI/字节宽)/采集周期/地址/注释/来源注释。来源注释据 `ControllerTag` 主动抓 PLC 侧注释（`ResolveSourceComment`+DB 导出缓存，复用类型解析同套路）。实测 Battery 系列正确显示 电池电量/充电过流/… 等来源注释，无 PLC 注释的变量正确留空。
+>   - `hmi-write-tags`：第 8 列 `[采集周期]`（写 AcquisitionCycle 链接）；`[访问模式]=Absolute` 时第 4 列当绝对地址（移除 ControllerTag + 写 LogicalAddress + AddressAccessMode=Absolute）。**踩坑**：absolute 模式留空 ControllerTag 的 Name 会被 TIA 拒 "open link is empty"，必须整段移除该链接。
+> - **不做（TIA 机制限制，已写入工具描述防幻觉）**：重命名（改名=新建另一变量，防引用错乱）、PLC 名称（经典 HMI 无此字段，由连接隐含）、写来源注释（PLC 符号注释的只读镜像，要改去改 PLC 侧）。
+> - **验证（真实工程，端到端，已清理）**：① 建 `ZZ_MCPTEST_Cyc`(绑 SOC,周期 500 ms) + `ZZ_MCPTEST_Abs`(Absolute,%M100.0,Bool,2 s) Import 全过；② 读回确认 周期/访问模式/地址/来源注释 全部正确（Cyc 来源注释=电池电量自动抓取，Abs 无绑定无来源注释）；③ 改 `ZZ_MCPTEST_Cyc` 周期 500→100 ms 读回正确；④ 删两个测试变量、读回 0 个。全程未 project-save，工程无残留。
+> - **文档**：`McpServer.cs` 两工具描述 + `docs/COMMAND-MANUAL.md` 改写 + 记忆 `hmi-tag-extra-fields.md`。
 
 > **2026-06-05 hmi-write-tags 修复变量类型继承 bug（B 方案，已端到端实测）**：
 > - **问题（用户诊断）**：`hmi-write-tags` 克隆本表首个变量当模板，只改名字+绑定（`SetBinding` 仅动 `AddressAccessMode`/`ControllerTag`/`Connection`），**变量"类型四元组"——AttributeList 的 `<Coding>`/`<Length>` + LinkList 的 `<DataType>`(PLC侧)/`<HmiDataType>`(HMI侧)——原样继承模板**。本机默认表首个变量是 Real，故新建变量恒为 Real；绑到非 Real 的 PLC 符号（USInt/Word…）+ 符号访问时，TIA 拒绝导入（"会覆盖 PLC 数据"）。非"恒为 Real 设计"，实为"恒为首个变量的类型"。
