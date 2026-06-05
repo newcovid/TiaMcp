@@ -4,7 +4,12 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**layout 命令属性归属重写：修复父控件吸入子控件属性 + 控件计数剔除图层/ProcessValue**）
+最近更新：2026-06-05（**layout 命令新增「所属模板(母版)」提示 + 属性归属重写**）
+
+> **2026-06-05 layout 命令新增「所属模板(母版)」提示**：
+> - **需求**：画面控件叠加在模板之上显示,模板提供页眉/页脚/导航等公共元素。读画面时若不知其模板,零上下文 AI 会漏掉这部分视觉。
+> - **实现**：`FindScreenTemplate` 取画面根直接 `<LinkList><Template><Name>`;`PrintScreenLayout` 顶部输出「所属模板(母版): X」+ 叠加说明 + 提醒"再调 hmi-read-template-layout 读模板布局综合考虑"。未用模板显示「无」;读模板本身时不显示(模板不自引用)。
+> - **验证**:`0010 车体状态`→全局画面(非模板_1)、`0001_MainPicture`→无、模板`全局画面`→不显示;CLI+MCP 双路径通过。
 
 > **2026-06-05 layout 命令属性归属重写（修复父/子属性串扰）**：
 > - **问题（用户反馈）**：`hmi-read-screen-layout`/`hmi-read-template-layout` 把子控件的属性显示到父控件上——根因是 `ChildText` 用 `Descendants()` 递归穿透，父容器(ScreenLayer/Group)读到第一个子控件的位置/大小，且动画/事件统计 = 自身+所有子控件之和；同时 `Hmi.Screen.Property`(ProcessValue) 被当独立控件计数（72 虚高）。此前文档把这些当"行为特征(非Bug)"，实为语义错误+上下文污染。

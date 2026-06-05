@@ -296,6 +296,16 @@ namespace TiaMcp
             return AttrText(o, "Text");
         }
 
+        // 画面所属模板(母版):画面根直接 <LinkList> 下的 <Template><Name>。无则 null。
+        // 画面元素叠加在模板之上显示,模板提供页眉/页脚/导航等公共元素。
+        private static string FindScreenTemplate(XElement screenEl)
+        {
+            var linkList = screenEl.Elements().FirstOrDefault(x => x.Name.LocalName == "LinkList");
+            var tmpl = linkList?.Elements().FirstOrDefault(x => x.Name.LocalName == "Template");
+            var n = tmpl?.Elements().FirstOrDefault(x => x.Name.LocalName == "Name" && !string.IsNullOrWhiteSpace(x.Value));
+            return n != null ? n.Value.Trim() : null;
+        }
+
         // 控件的"直接绑定变量"= 其 Property(过程值)下 TagConnectionDynamic 引用的 Tag;
         // 不含动画触发器变量(那些在动画段单列,避免把触发器误报成绑定)。
         private static string FindBoundTag(XElement o)
@@ -860,6 +870,24 @@ namespace TiaMcp
             Console.WriteLine($"  画面: {screenName} (#{screenNumber})");
             Console.WriteLine($"  尺寸: {width} x {height} (DIU)");
             Console.WriteLine($"  背景色: {backColor}");
+
+            // 所属模板(母版):画面元素叠加在模板之上,模板提供页眉/页脚/导航等公共元素。
+            // 提醒零上下文 AI 再去读模板布局,才能完整理解本画面的视觉呈现。
+            bool isTemplate = screenEl.Name.LocalName == "Hmi.Screen.ScreenTemplate";
+            string usedTemplate = FindScreenTemplate(screenEl);
+            if (!isTemplate)
+            {
+                if (usedTemplate != null)
+                {
+                    Console.WriteLine($"  所属模板(母版): {usedTemplate}");
+                    Console.WriteLine($"  ⚠ 本画面的控件叠加在模板「{usedTemplate}」之上显示——模板提供页眉/页脚/导航/永久区等公共元素,不在下方控件清单里。");
+                    Console.WriteLine($"    要完整理解本画面的视觉呈现,请同时读取模板布局: hmi-read-template-layout \"{usedTemplate}\"，再与本画面布局综合考虑。");
+                }
+                else
+                {
+                    Console.WriteLine("  所属模板(母版): 无（本画面未使用模板）");
+                }
+            }
 
             // 画面级事件(ClearScreen/GenerateScreen 等) — 作用域剪到图层之前,只取画面根自身事件
             var screenEvents = ScopedDescendants(screenEl).Where(e => e.Name.LocalName == "Hmi.Event.Event").ToList();
