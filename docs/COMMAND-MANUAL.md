@@ -541,7 +541,69 @@
       Button                     Start_Btn
   ```
 - **退出码**：0 成功；1 找不到画面。
-- **MCP 备注**：解析摘要打 stdout，但底层导出 XML 实测 ~20 万字符；**stderr 还 dump 700 字符样例**。MCP 化只回 `{objectCount,objects[],xmlCharCount,artifactPath}`，删 stderr dump。**最高优先污染项**。
+- **MCP 备注**：解析摘要打 stdout，但底层导出 XML 实测 ~20 万字符；**stderr 还 dump 700 字符样例**。MCP 化只回 `{objectCount,objects[],xmlCharCount,artifactPath}`，删 stderr dump。**最高优先污染项**。**⚠ 建议优先使用 `hmi-read-screen-layout` 获取完整视觉布局+动态行为。**
+
+### `hmi-read-screen-layout <画面名>` 🆕
+- **用途**：单画面完整视觉布局 + 动态行为。包含控件位置/大小/颜色/字体/文本/变量绑定/圆角/透明度/重叠检测 + **动画**（范围外观变色/闪烁、可见性控制）+ **事件**（点击跳转/按下动作、画面级事件）。**建议优先使用此命令而非 `hmi-read-screen`。**
+- **动画解析**：
+  - `RangeAppearanceAnimation`：根据变量值范围改变颜色/闪烁。含触发变量 + 范围值（上下限+背景色+前景色+闪烁类型）
+  - `VisibilityAnimation`：根据变量值控制可见性。含触发变量 + 范围（RangeStart~RangeEnd）+ 可见/隐藏
+  - `TagConnectionDynamic`：IO 域的动态变量绑定
+- **事件解析**：
+  - 控件级事件：Click（点击跳转画面）、Press（按下触发动作）等
+  - 画面级事件：ClearScreen（清屏）、GenerateScreen（生成画面）等
+  - 含函数名+类型+参数（链接值如画面名/变量名、字面值如数值）
+- **输出示例**：
+  ```
+  ==== HMI_1 · 画面布局 0010 车体状态 ====
+    画面: 0010 车体状态 (#?)
+    尺寸: 800 x 480 (DIU)
+    背景色: 232, 237, 243
+
+    ── 画面级事件 (2 个) ──
+      [ClearScreen] → SetTag(SystemFunction) Tag=Tag_ScreenNumber, Value=0
+      [GenerateScreen] → SetTag(SystemFunction) Tag=Tag_ScreenNumber, Value=10
+
+    控件总数: 72
+
+    === 详细属性 ===
+    [Circle] (5 个)
+      ── 圆_1 ──
+         位置: (408, 77)
+         大小: 32 × 32
+         背景色: 217, 217, 217
+         绑定变量: HMI_PLC_Interactive_Data_AGV_Ready
+         ── 动画 (1 个) ──
+           [RangeAppearanceAnimation]
+             触发器: RangeTag → 变量: HMI_PLC_Interactive_Data_AGV_Ready
+             范围 [0 ~ 0]:
+               背景色: 222, 219, 222
+             范围 [1 ~ 1]:
+               背景色: 0, 255, 0
+      ── 圆_2 ──
+         ...
+         ── 动画 (1 个) ──
+           [VisibilityAnimation] 范围=[1~1] 值在范围内时隐藏
+             触发器: VisibilityTag → 变量: EmergencyStop02
+
+    [Button] (6 个)
+      ── 模板_按钮_4 ──
+         文本: "车体状态"
+         ── 事件 (1 个) ──
+           [Click]
+             函数: ActivateScreen (SystemFunction)
+               参数: Screen name = 0010 车体状态
+
+    === 布局统计 ===
+    • 控件类型分布: Circle×5, Button×6, IOField×12, ...
+    • 重叠控件: 无
+  ```
+- **退出码**：0 成功；1 找不到画面。
+
+### `hmi-read-template-layout <模板名>` 🆕
+- **用途**：模板画面（母版）完整视觉布局 + 动态行为。与 `hmi-read-screen-layout` 相同的信息，但针对模板画面。**建议优先使用此命令而非 `hmi-read-templates`。**
+- **输出格式**：同 `hmi-read-screen-layout`。
+- **退出码**：0 成功；1 找不到模板。
 
 ### `hmi-find-unused-tags` 🆕
 - **用途**：HMI **死代码候选**——把声明变量(解析变量表 XML 的全集)与画面+模板里**实际引用**的变量交叉比对，列出「建了但没摆上任何画面/模板」的孤儿。对标 PLC `find-unused`。`hmi-read-tags` 只到变量表层下不了「真在用」的结论，本命令补这一步。
