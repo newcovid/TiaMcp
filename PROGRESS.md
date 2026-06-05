@@ -4,7 +4,18 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**layout 命令新增「所属模板(母版)」提示 + 属性归属重写**）
+最近更新：2026-06-05（**hmi-write-tags 类型继承 bug 修复：变量类型按所绑 PLC 符号自动定型**）
+
+> **2026-06-05 hmi-write-tags 修复变量类型继承 bug（B 方案，已端到端实测）**：
+> - **问题（用户诊断）**：`hmi-write-tags` 克隆本表首个变量当模板，只改名字+绑定（`SetBinding` 仅动 `AddressAccessMode`/`ControllerTag`/`Connection`），**变量"类型四元组"——AttributeList 的 `<Coding>`/`<Length>` + LinkList 的 `<DataType>`(PLC侧)/`<HmiDataType>`(HMI侧)——原样继承模板**。本机默认表首个变量是 Real，故新建变量恒为 Real；绑到非 Real 的 PLC 符号（USInt/Word…）+ 符号访问时，TIA 拒绝导入（"会覆盖 PLC 数据"）。非"恒为 Real 设计"，实为"恒为首个变量的类型"。
+> - **修复（B 方案）**：据所绑 PLC 符号真实 S7 类型定型，新增 `HmiWrites` 解析链——
+>   ① `ResolvePlcSymbolType`：按引号边界拆符号路径（`SplitSymbol`，支持 `DB."含空格成员"`），首段当 DB 导出 SimaticML（`GetDbXml` 缓存）下钻 `<Section><Member Datatype=..>`；裸 PLC 变量走 `PlcTag.DataTypeName`；DTL 子字段（`.SECOND`）内置表；数组/`String[n]` 规整裸类型。
+>   ② `S7Map`：S7→(HmiDataType,Coding,Length) 内置映射，实测自本机 KTP700 导出（Bool/Byte/Int/UInt/Word/DInt/Real/DTL 已核实；整数族 Binary+字节宽；Real=IEEE754Float/4、LReal=IEEE754Double/8、DTL=Binary/12→DateTime）。
+>   ③ `BuildDonorIndex`：内置表未覆盖的类型，扫项目内同 PLC 类型现有变量、采信 TIA 自产四元组兜底。
+>   ④ `ApplyTypeSpec` 写回四元组；解析失败回 `[警告]` 并提示用第 7 列 `[类型]` 显式兜底。
+> - **同类问题一并修复**：① **改绑现有变量**也按新符号重定类型（同根因）；② 清单第 7 列 `[类型]` 显式兜底（A 方案，零上下文 AI 逃生口）；③ `[注释]` 列此前被静默忽略，现 `SetComment` 写入。
+> - **验证（真实工程，端到端）**：dry-run + 真实 Import + 读回 + 删除清理全过。Int/Bool/Word/Real 四类符号建变量**导入全通过、0 错**，读回类型正确（Int/Bool/Word=Binary、Real=IEEE754Float），含带引号成员名与 Word→UInt 区分。清理后未 project-save（.ap18 未动）。
+> - **文档**：`McpServer.cs` 工具描述 + `docs/COMMAND-MANUAL.md` 改写。
 
 > **2026-06-05 layout 命令新增「所属模板(母版)」提示**：
 > - **需求**：画面控件叠加在模板之上显示,模板提供页眉/页脚/导航等公共元素。读画面时若不知其模板,零上下文 AI 会漏掉这部分视觉。

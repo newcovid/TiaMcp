@@ -692,16 +692,21 @@
 > 回调标记：`[建]/[改]/[删]/[跳]/[错]`。建/改走 导出→改XML→Import(Override) 克隆模板；删走 API。
 
 ### `hmi-write-tags <清单文件> [--dry-run]`
-- **用途**：克隆模板建/改 HMI 符号变量（绑定 PLC 符号）。
-- **输入**：清单行 `表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释]`。
-- **输出示例**：
+- **用途**：克隆模板建/改 HMI 符号变量（绑定 PLC 符号）。**变量数据类型据所绑 PLC 符号自动解析定型，无需手填**。
+- **输入**：清单行 `表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型]`。
+  - `PLC符号` 支持：`DB.成员`、`DB."含空格成员"`（引号包裹）、`DB.dtl成员.SECOND`（DTL 子字段）、裸 PLC 变量名。
+  - `[类型]`（第 7 列，**通常留空**）：仅当 PLC 符号自动解析失败（逐条结果出现 `[警告]`，多见于 UDT 成员/受保护 DB/图形 DB）时，才显式给 S7 类型兜底：`Bool/SInt/USInt/Byte/Char/Int/UInt/Word/DInt/UDInt/DWord/Real/LReal/DTL`。
+- **输出示例**（每条结果尾部回显自动解析出的类型四元组）：
   ```
   目标 HMI: HMI_1  [DRY-RUN 预演，不写入]
-    [建] MCP_Test_HMITag  conn=Connection_1 plc=DB_Demo.TotalVoltage
-  汇总: 建 1 / 改 0 / 跳 0 / 错 0（预演，未写入）
+    [建] ZZ_Int   conn=HMI_连接 plc=DB.Battery_SOH        类型=Int→HMI Int(Coding=Binary,Len=2)
+    [建] ZZ_Word  conn=HMI_连接 plc=DB."Charging overcurrent" 类型=Word→HMI UInt(Coding=Binary,Len=2)
+    [建] ZZ_Real  conn=HMI_连接 plc=DB.TotalVoltage         类型=Real→HMI Real(Coding=IEEE754Float,Len=4)
+  汇总: 建 3 / 改 0 / 跳 0 / 错 0（预演，未写入）
   ```
 - **退出码**：0 无错；2 有错。
-- **MCP 备注**：**[已修复]** ① 变量名含 `.` 或 `\` 在解析阶段即报错（plc 字段含 `.` 仍合法）；② 模板/现有变量**无 PLC 绑定结构时报 `[错]` 而非假成功**（此前会回显成功但实际没绑定）。克隆体 ID 自动重编保证唯一。
+- **MCP 备注**：**[已修复 2026-06-05] 类型继承 bug（B 方案）**——旧实现克隆本表首个变量当模板，只改名字+绑定，**类型四元组（`Coding`/`Length` + LinkList 的 `DataType`/`HmiDataType`）原样继承模板**，导致新变量类型恒等于首个变量（本机即 Real）；绑到非 Real 的 PLC 符号（如 USInt/Word）时符号访问下被 TIA 拒导入（"会覆盖 PLC 数据"）。现按所绑 PLC 符号的真实 S7 类型（DB 接口下钻 + 内置 S7→WinCC 映射，未覆盖类型则采信项目内同类型样本变量）重写四元组。已端到端实测：Int/Bool/Word/Real 四类符号建变量导入全通过、类型正确。**改绑现有变量同样按新符号重定类型**。
+  - 其余既修：① 变量名含 `.`/`\` 解析期即报错（plc 字段含 `.` 仍合法）；② 模板/现有变量无 PLC 绑定结构时报 `[错]` 而非假成功；③ `[注释]` 列现写入变量注释（此前被静默忽略）。克隆体 ID 自动重编保证唯一。
 
 ### `hmi-delete-tags <清单文件> [--dry-run]`
 - **用途**：按清单从 HMI 变量表删变量（API 删，幂等）。

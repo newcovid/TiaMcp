@@ -364,8 +364,8 @@ namespace TiaMcp
             new ToolDef{ Name="hmi-tag-usage", Desc="单 HMI 变量反查:被哪些画面/模板/控件引用(对标 PLC where-used;扫画面+模板,不扫报警/调度器)", Req=new[]{"tagName"},
                 P=new Dictionary<string,string>{ ["tagName"]="HMI 变量名(精确名,大小写不敏感;查准名用 hmi-read-tags)" } },
             // HMI 写
-            new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]([]内可省)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览、不实际写" } },
+            new ToolDef{ Name="hmi-write-tags", Desc="建/改 HMI 变量(变量数据类型据所绑 PLC 符号自动解析,无需手填)", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
+                P=new Dictionary<string,string>{ ["listText"]="每行: 表名|变量名|连接|PLC符号|[访问]|[注释]|[类型]([]内可省)。变量类型(Coding/Length/数据类型)自动按 PLC符号 的真实 S7 类型推定(如绑 Word→HMI UInt、Bool→Bool、Real→Real),不要手填普通情况;仅当 PLC符号 自动解析失败(逐条结果出现[警告])时,才用第7列[类型]显式给 S7 类型(Bool/Int/UInt/Word/DInt/Real/DTL...)兜底。PLC符号 可为 DB.成员/DB.\"含空格成员\"/DB.dtl成员.SECOND/裸PLC变量。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览(含自动解析出的类型)、不实际写" } },
             new ToolDef{ Name="hmi-delete-tags", Desc="删 HMI 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
                 P=new Dictionary<string,string>{ ["listText"]="每行: [表名|]变量名。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览、不实际删" } },
             new ToolDef{ Name="hmi-export-screen", Desc="导出单画面 XML 供编辑", Req=new[]{"screenName","outDir"},
