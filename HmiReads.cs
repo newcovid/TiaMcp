@@ -537,7 +537,165 @@ namespace TiaMcp
             }
         }
 
-        // ===== hmi-read-screen-layout <名>:单画面视觉布局信息(位置/大小/颜色/字体等) =====
+        // 解析动画信息
+        private static void PrintAnimations(XElement controlEl, string controlName)
+        {
+            // 查找所有动画元素
+            var animations = controlEl.Descendants()
+                .Where(e => e.Name.LocalName.StartsWith("Hmi.Dynamic.", StringComparison.Ordinal))
+                .ToList();
+
+            if (animations.Count == 0) return;
+
+            Console.WriteLine($"       ── 动画 ({animations.Count} 个) ──");
+
+            // 解析范围外观动画
+            var rangeAnimations = animations
+                .Where(e => e.Name.LocalName == "Hmi.Dynamic.RangeAppearanceAnimation")
+                .ToList();
+
+            foreach (var rangeAnim in rangeAnimations)
+            {
+                string animName = ChildText(rangeAnim, "Name") ?? "RangeAppearanceAnimation";
+                Console.WriteLine($"         [{animName}]");
+
+                // 查找触发器（绑定变量）
+                var triggers = rangeAnim.Descendants()
+                    .Where(e => e.Name.LocalName == "Hmi.Dynamic.TagElementTrigger")
+                    .ToList();
+
+                foreach (var trigger in triggers)
+                {
+                    string triggerType = trigger.Attribute("CompositionName")?.Value ?? "?";
+                    string tagName = ChildText(trigger, "Name") ?? "?";
+                    Console.WriteLine($"           触发器: {triggerType} → 变量: {tagName}");
+                }
+
+                // 查找范围值
+                var ranges = rangeAnim.Descendants()
+                    .Where(e => e.Name.LocalName == "Hmi.Dynamic.Range")
+                    .ToList();
+
+                foreach (var range in ranges)
+                {
+                    string lower = ChildText(range, "LowerLimit") ?? "?";
+                    string upper = ChildText(range, "UpperLimit") ?? "?";
+                    string backColor = ChildText(range, "BackColor") ?? "-";
+                    string foreColor = ChildText(range, "ForeColor") ?? "-";
+                    string flashing = ChildText(range, "FlashingType") ?? "No";
+
+                    Console.WriteLine($"           范围 [{lower} ~ {upper}]:");
+                    Console.WriteLine($"             背景色: {backColor}");
+                    Console.WriteLine($"             前景色: {foreColor}");
+                    if (flashing != "No") Console.WriteLine($"             闪烁: {flashing}");
+                }
+            }
+
+            // 解析可见性动画
+            var visibilityAnimations = animations
+                .Where(e => e.Name.LocalName == "Hmi.Dynamic.VisibilityAnimation")
+                .ToList();
+
+            foreach (var visAnim in visibilityAnimations)
+            {
+                string rangeStart = ChildText(visAnim, "RangeStart") ?? "?";
+                string rangeEnd = ChildText(visAnim, "RangeEnd") ?? "?";
+                string visWhenTrue = ChildText(visAnim, "Visible") ?? "?";
+                Console.WriteLine($"         [VisibilityAnimation] 范围=[{rangeStart}~{rangeEnd}] 值在范围内时{(visWhenTrue == "true" ? "可见" : "隐藏")}");
+
+                // 查找触发器
+                var triggers = visAnim.Descendants()
+                    .Where(e => e.Name.LocalName == "Hmi.Dynamic.TagElementTrigger")
+                    .ToList();
+
+                foreach (var trigger in triggers)
+                {
+                    string triggerType = trigger.Attribute("CompositionName")?.Value ?? "?";
+                    string tagName = ChildText(trigger, "Name") ?? "?";
+                    Console.WriteLine($"           触发器: {triggerType} → 变量: {tagName}");
+                }
+            }
+
+            // 解析标签连接动态（用于IO域等）
+            var tagConnections = animations
+                .Where(e => e.Name.LocalName == "Hmi.Dynamic.TagConnectionDynamic")
+                .ToList();
+
+            foreach (var tagConn in tagConnections)
+            {
+                string tagName = ChildText(tagConn, "Name") ?? "?";
+                string indirect = ChildText(tagConn, "Indirect") ?? "false";
+                Console.WriteLine($"         [TagConnection] 变量: {tagName} (间接: {indirect})");
+            }
+        }
+
+        // 解析事件信息
+        private static void PrintEvents(XElement controlEl, string controlName)
+        {
+            // 查找所有事件元素
+            var events = controlEl.Descendants()
+                .Where(e => e.Name.LocalName == "Hmi.Event.Event")
+                .ToList();
+
+            if (events.Count == 0) return;
+
+            Console.WriteLine($"       ── 事件 ({events.Count} 个) ──");
+
+            foreach (var evt in events)
+            {
+                string eventName = ChildText(evt, "Name") ?? "?";
+                Console.WriteLine($"         [{eventName}]");
+
+                // 查找事件处理器
+                var handlers = evt.Descendants()
+                    .Where(e => e.Name.LocalName == "Hmi.Event.FunctionListEventHandler")
+                    .ToList();
+
+                foreach (var handler in handlers)
+                {
+                    // 查找函数条目
+                    var entries = handler.Descendants()
+                        .Where(e => e.Name.LocalName == "Hmi.Event.FunctionListEntry")
+                        .ToList();
+
+                    foreach (var entry in entries)
+                    {
+                        string funcName = ChildText(entry, "Name") ?? "?";
+                        string funcType = ChildText(entry, "Type") ?? "?";
+                        Console.WriteLine($"           函数: {funcName} ({funcType})");
+
+                        // 查找参数
+                        var parameters = entry.Descendants()
+                            .Where(e => e.Name.LocalName == "Hmi.Event.FunctionListEntryParameter")
+                            .ToList();
+
+                        foreach (var param in parameters)
+                        {
+                            string paramName = ChildText(param, "Name") ?? "?";
+                            // 优先取 LinkList/Value/Name（变量名/画面名等链接值）
+                            var linkVal = param.Descendants()
+                                .FirstOrDefault(e => e.Name.LocalName == "Value"
+                                    && e.Parent?.Name.LocalName == "LinkList"
+                                    && e.Elements().Any(c => c.Name.LocalName == "Name"));
+                            string paramValue;
+                            if (linkVal != null)
+                            {
+                                paramValue = ChildText(linkVal, "Name") ?? "?";
+                            }
+                            else
+                            {
+                                // 回退到 AttributeList/Value（带 Type 属性的字面值）
+                                paramValue = ChildText(param, "Value") ?? "?";
+                            }
+
+                            Console.WriteLine($"             参数: {paramName} = {paramValue}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===== hmi-read-screen-layout <名>:单画面视觉布局信息(位置/大小/颜色/字体/动画/事件) =====
         public static int HmiReadScreenLayout(string screenName)
         {
             using (var s = TiaSession.AttachFirst())
@@ -597,7 +755,7 @@ namespace TiaMcp
             }
         }
 
-        // 解析画面XML，提取视觉布局信息
+        // 解析画面XML，提取视觉布局信息(位置/大小/颜色/字体 + 动画 + 事件)
         private static void PrintScreenLayout(string xml, string screenName)
         {
             var doc = XDocument.Parse(xml);
@@ -615,12 +773,44 @@ namespace TiaMcp
             Console.WriteLine($"  画面: {screenName} (#{screenNumber})");
             Console.WriteLine($"  尺寸: {width} x {height} (DIU)");
             Console.WriteLine($"  背景色: {backColor}");
+
+            // 画面级事件(ClearScreen/GenerateScreen 等) — 直接在屏幕根的 ObjectList 下
+            var screenEvents = screenEl.Descendants().Where(e => e.Name.LocalName == "Hmi.Event.Event"
+                && e.Parent?.Parent == screenEl).ToList();
+            if (screenEvents.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"  ── 画面级事件 ({screenEvents.Count} 个) ──");
+                foreach (var evt in screenEvents)
+                {
+                    string evtName = ChildText(evt, "Name") ?? "?";
+                    var entries = evt.Descendants().Where(e => e.Name.LocalName == "Hmi.Event.FunctionListEntry").ToList();
+                    foreach (var entry in entries)
+                    {
+                        string funcName = ChildText(entry, "Name") ?? "?";
+                        string funcType = ChildText(entry, "Type") ?? "";
+                        // 提取关键参数
+                        var pars = entry.Descendants().Where(e => e.Name.LocalName == "Hmi.Event.FunctionListEntryParameter").ToList();
+                        var parStrs = new List<string>();
+                        foreach (var p in pars)
+                        {
+                            string pName = ChildText(p, "Name") ?? "?";
+                            // 链接值(变量名/画面名等)
+                            var linkVal = p.Descendants().FirstOrDefault(x => x.Name.LocalName == "Name" && x.Parent?.Name.LocalName == "Value");
+                            string pVal = linkVal?.Value ?? ChildText(p, "Value") ?? "?";
+                            parStrs.Add($"{pName}={pVal}");
+                        }
+                        Console.WriteLine($"    [{evtName}] → {funcName}({funcType}) {string.Join(", ", parStrs)}");
+                    }
+                }
+            }
             Console.WriteLine();
 
             // 提取所有画面对象
             var objs = doc.Descendants()
                           .Where(e => e.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)
-                                      && e.Name.LocalName != "Hmi.Screen.Screen")
+                                      && e.Name.LocalName != "Hmi.Screen.Screen"
+                                      && e.Name.LocalName != "Hmi.Screen.ScreenTemplate")
                           .ToList();
 
             Console.WriteLine($"  控件总数: {objs.Count}");
@@ -732,6 +922,12 @@ namespace TiaMcp
                         if (tl != null || tr != null || bl != null || br != null)
                             Console.WriteLine($"       圆角: TL={tl ?? "0"} TR={tr ?? "0"} BL={bl ?? "0"} BR={br ?? "0"}");
                     }
+
+                    // ★ 动画信息
+                    PrintAnimations(o, oname);
+
+                    // ★ 事件信息
+                    PrintEvents(o, oname);
                 }
             }
 

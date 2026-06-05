@@ -4,7 +4,16 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**新增 `hmi-read-screen-layout` 命令 — 画面视觉布局信息**；更新 MCP 工具说明让 AI 明确区分摘要 vs 布局 vs 完整XML）
+最近更新：2026-06-05（**hmi-read-screen-layout / hmi-read-template-layout 新增动画+事件解析**；MCP 工具描述更新建议 AI 优先使用 layout 命令）
+
+> **2026-06-05 hmi-read-screen-layout / hmi-read-template-layout 新增动画+事件解析**：
+> - **问题**：布局命令只输出静态视觉属性（位置/大小/颜色/字体），缺少动画和事件信息。动画（如 RangeAppearanceAnimation 根据变量值变色、VisibilityAnimation 控制可见性）和事件（如 Click 跳转画面、Press 触发动作）直接影响视觉表现，AI 无法理解画面的动态行为。
+> - **方案**：在 `PrintScreenLayout` 中为每个控件调用 `PrintAnimations` 和 `PrintEvents`：
+>   - **动画解析**：RangeAppearanceAnimation（范围外观变色/闪烁，含触发变量+范围值+颜色）、VisibilityAnimation（可见性控制，含触发变量+范围+可见/隐藏）、TagConnectionDynamic（IO 域动态变量绑定）
+>   - **事件解析**：控件级事件（Click/Press 等）和画面级事件（ClearScreen/GenerateScreen 等），含函数名+类型+参数（链接值如画面名/变量名、字面值如数值）
+>   - **MCP 描述更新**：`hmi-read-screen`/`hmi-read-templates` 描述改为"强烈建议改用 layout 命令"；`hmi-read-screen-layout`/`hmi-read-template-layout` 描述加入动画+事件关键词
+> - **XML 结构发现**（实测导出分析）：`Hmi.Dynamic.*` 下 5 种元素（RangeAppearanceAnimation/VisibilityAnimation/TagConnectionDynamic/TagElementTrigger/Range）；`Hmi.Event.Event` 下 4 种元素（Event/FunctionListEventHandler/FunctionListEntry/FunctionListEntryParameter）
+> - **验证**：编译 0 错 0 警；实测主画面（20 控件/画面级事件+Click 跳转）、车体状态画面（72 控件/大量 RangeAppearanceAnimation+VisibilityAnimation）、模板_1（38 控件/按钮变色动画+Click 事件）均正确输出
 
 > **2026-06-05 新增 `hmi-read-screen-layout` 命令 — 画面视觉布局信息**：
 > - **问题**：`hmi-read-screen` 只返回控件类型+变量绑定摘要，不含位置/大小/颜色/字体等视觉信息；`hmi-export-screen` 导出完整XML（200K+字符）占用大量上下文，AI不愿主动调用。
