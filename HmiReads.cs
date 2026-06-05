@@ -601,7 +601,9 @@ namespace TiaMcp
         private static void PrintScreenLayout(string xml, string screenName)
         {
             var doc = XDocument.Parse(xml);
-            var screenEl = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.Screen");
+            // 支持普通画面和模板画面两种根元素
+            var screenEl = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.Screen")
+                        ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.ScreenTemplate");
             if (screenEl == null) { Console.WriteLine("  [错误] 无法解析画面根元素"); return; }
 
             // 画面基本信息
