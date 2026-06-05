@@ -557,7 +557,7 @@ namespace TiaMcp
                         if (File.Exists(tmp)) File.Delete(tmp);
                         target.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
                         string xml = IoUtil.ReadPlaintext(tmp);
-                        PrintScreenLayout(xml);
+                        PrintScreenLayout(xml, target.Name);
                     }
                     finally { try { File.Delete(tmp); } catch { } }
                     return 0;
@@ -567,15 +567,44 @@ namespace TiaMcp
             }
         }
 
+        // ===== hmi-read-template-layout <名>:模板画面(母版)视觉布局信息 =====
+        public static int HmiReadTemplateLayout(string templateName)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    var templates = new List<ScreenTemplate>(); CollectTemplates(kv.Value.ScreenTemplateFolder, templates);
+                    ScreenTemplate target = templates.FirstOrDefault(x => string.Equals(x.Name, templateName, StringComparison.OrdinalIgnoreCase));
+                    if (target == null) continue;
+
+                    Console.WriteLine($"==== {kv.Key} · 模板布局 {target.Name} ====");
+                    string tmp = IoUtil.NewTempFile(".xml");
+                    try
+                    {
+                        if (File.Exists(tmp)) File.Delete(tmp);
+                        target.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
+                        string xml = IoUtil.ReadPlaintext(tmp);
+                        PrintScreenLayout(xml, target.Name);
+                    }
+                    finally { try { File.Delete(tmp); } catch { } }
+                    return 0;
+                }
+                Console.WriteLine($"找不到模板: {templateName}");
+                return 1;
+            }
+        }
+
         // 解析画面XML，提取视觉布局信息
-        private static void PrintScreenLayout(string xml)
+        private static void PrintScreenLayout(string xml, string screenName)
         {
             var doc = XDocument.Parse(xml);
             var screenEl = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.Screen");
             if (screenEl == null) { Console.WriteLine("  [错误] 无法解析画面根元素"); return; }
 
             // 画面基本信息
-            string screenName = ChildText(screenEl, "Name") ?? "?";
             string width = ChildText(screenEl, "Width") ?? "?";
             string height = ChildText(screenEl, "Height") ?? "?";
             string backColor = ChildText(screenEl, "BackColor") ?? "?";
@@ -593,12 +622,13 @@ namespace TiaMcp
                           .ToList();
 
             Console.WriteLine($"  控件总数: {objs.Count}");
-            Console.WriteLine("  ┌─────────────────────────────────────────────────────────────────────────────┐");
-            Console.WriteLine("  │ 控件类型            名称                    位置(X,Y)     大小(W×H)    颜色   │");
-            Console.WriteLine("  ├─────────────────────────────────────────────────────────────────────────────┤");
+            Console.WriteLine();
 
-            foreach (var o in objs)
+            // 控件摘要列表（每行一个控件，结构化输出）
+            Console.WriteLine("  === 控件摘要 ===");
+            for (int i = 0; i < objs.Count; i++)
             {
+                var o = objs[i];
                 string type = o.Name.LocalName.Replace("Hmi.Screen.", "");
                 string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
                 string left = ChildText(o, "Left") ?? ChildText(o, "X") ?? "?";
@@ -606,15 +636,10 @@ namespace TiaMcp
                 string w = ChildText(o, "Width") ?? "?";
                 string h = ChildText(o, "Height") ?? "?";
                 string backClr = ChildText(o, "BackColor") ?? ChildText(o, "BackgroundColor") ?? "-";
-                string foreClr = ChildText(o, "ForeColor") ?? ChildText(o, "ForegroundColor") ?? "-";
 
-                // 截断过长的名称
-                if (oname.Length > 20) oname = oname.Substring(0, 17) + "...";
-                if (type.Length > 18) type = type.Substring(0, 15) + "...";
-
-                Console.WriteLine($"  │ {type,-18} {oname,-20} ({left,-4},{top,-4})  {w,-4}×{h,-4}   {backClr,-8} │");
+                Console.WriteLine($"  [{i + 1}] {type} \"{oname}\"");
+                Console.WriteLine($"      位置=({left},{top}) 大小={w}×{h} 背景色={backClr}");
             }
-            Console.WriteLine("  └─────────────────────────────────────────────────────────────────────────────┘");
             Console.WriteLine();
 
             // 提取详细属性（按类型分组）
@@ -671,12 +696,10 @@ namespace TiaMcp
                         if (strikeout != null && strikeout.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 删除线");
                     }
 
-                    // 文本内容（如果有）
+                    // 文本内容（如果有，完整输出）
                     string text = ChildText(o, "Text");
                     if (text != null)
                     {
-                        // 截断过长的文本
-                        if (text.Length > 50) text = text.Substring(0, 47) + "...";
                         Console.WriteLine($"       文本: \"{text}\"");
                     }
 
@@ -715,16 +738,15 @@ namespace TiaMcp
             Console.WriteLine("  === 布局统计 ===");
             Console.WriteLine($"  • 控件类型分布: {string.Join(", ", grouped.Select(g => $"{g.Key}×{g.Count()}"))}");
 
-            // 检测重叠控件
+            // 检测重叠控件（完整输出，不截断）
             var overlapping = DetectOverlappingControls(objs);
             if (overlapping.Count > 0)
             {
                 Console.WriteLine($"  • 重叠控件: {overlapping.Count} 对");
-                foreach (var pair in overlapping.Take(5))
+                foreach (var pair in overlapping)
                 {
                     Console.WriteLine($"    - {pair.Item1} 与 {pair.Item2}");
                 }
-                if (overlapping.Count > 5) Console.WriteLine($"    ... 还有 {overlapping.Count - 5} 对");
             }
             else
             {

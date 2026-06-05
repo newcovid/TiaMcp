@@ -49,10 +49,10 @@
 | 4 | 图形块"写"✅ ｜ PLC侧批量✅ ｜ **HMI 探针✅ + 2a读✅ + 2b写✅** | ✅ |
 | 5 | **打包成 MCP(stdio) 接入 Claude Code** | ✅ |
 
-## 已实现命令（59）
+## 已实现命令（60）
 - **读取**：`list` `read-tags` `read-udts` `export-source` `export-xml` `export-udt` **`block-info`🆕** `hmi-probe`
 - **工程/硬件/库**🆕：`project-info` `device-list` `device-info [设备名]` `device-modules [设备名]` `device-network [设备名]`(子网/IoSystem/IP) `library-list`（项目库类型/母版 + 全局库枚举）（纯只读；device-modules 展开本地机架模块 + 分布式IO站模块树）
-- **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-screen-layout <名>`🆕** `hmi-read-templates` `hmi-read-connections` `hmi-export-all <目录>`(含模板)
+- **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-screen-layout <名>`🆕** `hmi-read-templates` **`hmi-read-template-layout <名>`🆕** `hmi-read-connections` `hmi-export-all <目录>`(含模板)
 - **HMI 变量使用分析**🆕：**`hmi-find-unused-tags`**(声明变量 vs 画面/模板实际引用→列孤儿/HMI死代码候选) **`hmi-tag-usage <变量>`**(单变量反查被哪些画面/模板/控件引用,对标 PLC where-used)。扫画面+模板,**不扫报警/调度器/多路复用→未引用≠可安全删,删前博图复核**
 - **HMI 写**：`hmi-write-tags` `hmi-delete-tags` `hmi-export-screen` `hmi-import-screen` `hmi-delete-screen`（全带 `--dry-run`）
 - **HMI 模板(母版)**🆕：`hmi-export-template <名> <目录>` `hmi-import-template <xml>[--dry-run]` `hmi-delete-template <名>[--dry-run]`
