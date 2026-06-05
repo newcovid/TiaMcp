@@ -4,7 +4,22 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-04（**指令集审计 + 8 修复 + 22 新命令(A+B+C) + 阶段5 MCP 打包完成 + MCP 工具说明审计加固(P0/P1/P2) + know-how 解锁/加锁命令(unlock-block/lock-block) + 实测加固两条工具说明 + inline 导入工具新增文件路径入口(`<名>Path`)**；审计 `docs/AUDIT-2026-06-04.md`，手册 `docs/COMMAND-MANUAL.md`，MCP 接入 `docs/MCP-SETUP.md`，保护命令 spec `docs/superpowers/specs/2026-06-04-block-protection-design.md`，路径入口 spec/plan `docs/superpowers/specs|plans/2026-06-04-mcp-import-filepath*.md`）
+最近更新：2026-06-05（**新增 `hmi-read-screen-layout` 命令 — 画面视觉布局信息**；更新 MCP 工具说明让 AI 明确区分摘要 vs 布局 vs 完整XML）
+
+> **2026-06-05 新增 `hmi-read-screen-layout` 命令 — 画面视觉布局信息**：
+> - **问题**：`hmi-read-screen` 只返回控件类型+变量绑定摘要，不含位置/大小/颜色/字体等视觉信息；`hmi-export-screen` 导出完整XML（200K+字符）占用大量上下文，AI不愿主动调用。
+> - **方案**：新增 `hmi-read-screen-layout <画面名>` 命令，解析画面XML提取视觉属性：
+>   - 控件位置 (X, Y) 和大小 (W × H)
+>   - 颜色属性 (背景色/前景色/边框色/替代色)
+>   - 字体属性 (字体名/大小/粗体/斜体/下划线/删除线)
+>   - 边框属性 (宽度/线型)
+>   - 文本内容
+>   - 变量绑定
+>   - 圆角/透明度/可见性/旋转
+>   - 重叠控件检测
+> - **输出格式**：表格化摘要 + 按类型分组的详细属性 + 布局统计
+> - **MCP 工具说明优化**：明确标注 `hmi-read-screen` 仅基础摘要、`hmi-read-screen-layout` 提供视觉布局、`hmi-export-screen` 提供完整XML
+> - **验证**：编译 0 错 0 警
 
 > **2026-06-04 能力增强 · inline 导入工具统一支持文件路径入口（解决大文件内联报错）**：`hmi-import-screen` 等只接 inline 文本，大画面 XML（实测单画面达 201,279 字符）内联导入会失败。
 > - **根因**：非 TIA/Openness 限制，也非服务器 JSON 上限（`MaxJsonLength=int.MaxValue`）；瓶颈在传输上游——inline 要求 AI 把整份文本作单个 JSON 实参逐字复现，撞 token 上限/截断/转义错。违反项目自己「大产物不内联」约定（原仅写给输出，输入侧漏了）。
@@ -34,10 +49,10 @@
 | 4 | 图形块"写"✅ ｜ PLC侧批量✅ ｜ **HMI 探针✅ + 2a读✅ + 2b写✅** | ✅ |
 | 5 | **打包成 MCP(stdio) 接入 Claude Code** | ✅ |
 
-## 已实现命令（58）
+## 已实现命令（59）
 - **读取**：`list` `read-tags` `read-udts` `export-source` `export-xml` `export-udt` **`block-info`🆕** `hmi-probe`
 - **工程/硬件/库**🆕：`project-info` `device-list` `device-info [设备名]` `device-modules [设备名]` `device-network [设备名]`(子网/IoSystem/IP) `library-list`（项目库类型/母版 + 全局库枚举）（纯只读；device-modules 展开本地机架模块 + 分布式IO站模块树）
-- **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-templates`🆕** `hmi-read-connections` `hmi-export-all <目录>`(含模板)
+- **HMI 读**：`hmi-list` `hmi-read-tags`(--table/--filter) `hmi-read-screens` `hmi-read-screen <名>` **`hmi-read-screen-layout <名>`🆕** `hmi-read-templates` `hmi-read-connections` `hmi-export-all <目录>`(含模板)
 - **HMI 变量使用分析**🆕：**`hmi-find-unused-tags`**(声明变量 vs 画面/模板实际引用→列孤儿/HMI死代码候选) **`hmi-tag-usage <变量>`**(单变量反查被哪些画面/模板/控件引用,对标 PLC where-used)。扫画面+模板,**不扫报警/调度器/多路复用→未引用≠可安全删,删前博图复核**
 - **HMI 写**：`hmi-write-tags` `hmi-delete-tags` `hmi-export-screen` `hmi-import-screen` `hmi-delete-screen`（全带 `--dry-run`）
 - **HMI 模板(母版)**🆕：`hmi-export-template <名> <目录>` `hmi-import-template <xml>[--dry-run]` `hmi-delete-template <名>[--dry-run]`

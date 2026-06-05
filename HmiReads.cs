@@ -537,6 +537,234 @@ namespace TiaMcp
             }
         }
 
+        // ===== hmi-read-screen-layout <名>:单画面视觉布局信息(位置/大小/颜色/字体等) =====
+        public static int HmiReadScreenLayout(string screenName)
+        {
+            using (var s = TiaSession.AttachFirst())
+            {
+                var hmis = s.FindHmis();
+                if (hmis.Count == 0) { Console.WriteLine("未找到 HMI 设备。"); return 0; }
+                foreach (var kv in hmis)
+                {
+                    var screens = new List<Screen>(); CollectScreens(kv.Value.ScreenFolder, screens);
+                    Screen target = screens.FirstOrDefault(x => string.Equals(x.Name, screenName, StringComparison.OrdinalIgnoreCase));
+                    if (target == null) continue;
+
+                    Console.WriteLine($"==== {kv.Key} · 画面布局 {target.Name} ====");
+                    string tmp = IoUtil.NewTempFile(".xml");
+                    try
+                    {
+                        if (File.Exists(tmp)) File.Delete(tmp);
+                        target.Export(new FileInfo(tmp), ExportOptions.WithDefaults);
+                        string xml = IoUtil.ReadPlaintext(tmp);
+                        PrintScreenLayout(xml);
+                    }
+                    finally { try { File.Delete(tmp); } catch { } }
+                    return 0;
+                }
+                Console.WriteLine($"找不到画面: {screenName}");
+                return 1;
+            }
+        }
+
+        // 解析画面XML，提取视觉布局信息
+        private static void PrintScreenLayout(string xml)
+        {
+            var doc = XDocument.Parse(xml);
+            var screenEl = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Hmi.Screen.Screen");
+            if (screenEl == null) { Console.WriteLine("  [错误] 无法解析画面根元素"); return; }
+
+            // 画面基本信息
+            string screenName = ChildText(screenEl, "Name") ?? "?";
+            string width = ChildText(screenEl, "Width") ?? "?";
+            string height = ChildText(screenEl, "Height") ?? "?";
+            string backColor = ChildText(screenEl, "BackColor") ?? "?";
+            string screenNumber = ChildText(screenEl, "ScreenNumber") ?? "?";
+
+            Console.WriteLine($"  画面: {screenName} (#{screenNumber})");
+            Console.WriteLine($"  尺寸: {width} x {height} (DIU)");
+            Console.WriteLine($"  背景色: {backColor}");
+            Console.WriteLine();
+
+            // 提取所有画面对象
+            var objs = doc.Descendants()
+                          .Where(e => e.Name.LocalName.StartsWith("Hmi.Screen.", StringComparison.Ordinal)
+                                      && e.Name.LocalName != "Hmi.Screen.Screen")
+                          .ToList();
+
+            Console.WriteLine($"  控件总数: {objs.Count}");
+            Console.WriteLine("  ┌─────────────────────────────────────────────────────────────────────────────┐");
+            Console.WriteLine("  │ 控件类型            名称                    位置(X,Y)     大小(W×H)    颜色   │");
+            Console.WriteLine("  ├─────────────────────────────────────────────────────────────────────────────┤");
+
+            foreach (var o in objs)
+            {
+                string type = o.Name.LocalName.Replace("Hmi.Screen.", "");
+                string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
+                string left = ChildText(o, "Left") ?? ChildText(o, "X") ?? "?";
+                string top = ChildText(o, "Top") ?? ChildText(o, "Y") ?? "?";
+                string w = ChildText(o, "Width") ?? "?";
+                string h = ChildText(o, "Height") ?? "?";
+                string backClr = ChildText(o, "BackColor") ?? ChildText(o, "BackgroundColor") ?? "-";
+                string foreClr = ChildText(o, "ForeColor") ?? ChildText(o, "ForegroundColor") ?? "-";
+
+                // 截断过长的名称
+                if (oname.Length > 20) oname = oname.Substring(0, 17) + "...";
+                if (type.Length > 18) type = type.Substring(0, 15) + "...";
+
+                Console.WriteLine($"  │ {type,-18} {oname,-20} ({left,-4},{top,-4})  {w,-4}×{h,-4}   {backClr,-8} │");
+            }
+            Console.WriteLine("  └─────────────────────────────────────────────────────────────────────────────┘");
+            Console.WriteLine();
+
+            // 提取详细属性（按类型分组）
+            Console.WriteLine("  === 详细属性 ===");
+            var grouped = objs.GroupBy(e => e.Name.LocalName.Replace("Hmi.Screen.", "")).OrderBy(g => g.Key);
+            foreach (var group in grouped)
+            {
+                Console.WriteLine($"\n  [{group.Key}] ({group.Count()} 个)");
+                foreach (var o in group)
+                {
+                    string oname = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
+                    Console.WriteLine($"    ── {oname} ──");
+
+                    // 位置和大小
+                    string left = ChildText(o, "Left") ?? ChildText(o, "X");
+                    string top = ChildText(o, "Top") ?? ChildText(o, "Y");
+                    string w = ChildText(o, "Width");
+                    string h = ChildText(o, "Height");
+                    if (left != null || top != null) Console.WriteLine($"       位置: ({left ?? "?"}, {top ?? "?"})");
+                    if (w != null || h != null) Console.WriteLine($"       大小: {w ?? "?"} × {h ?? "?"}");
+
+                    // 颜色属性
+                    string backClr = ChildText(o, "BackColor") ?? ChildText(o, "BackgroundColor");
+                    string altBackClr = ChildText(o, "AlternateBackColor");
+                    string foreClr = ChildText(o, "ForeColor") ?? ChildText(o, "ForegroundColor");
+                    string borderClr = ChildText(o, "BorderColor");
+                    string altBorderClr = ChildText(o, "AlternateBorderColor");
+                    if (backClr != null) Console.WriteLine($"       背景色: {backClr}");
+                    if (altBackClr != null) Console.WriteLine($"       替代背景色: {altBackClr}");
+                    if (foreClr != null) Console.WriteLine($"       前景色: {foreClr}");
+                    if (borderClr != null) Console.WriteLine($"       边框色: {borderClr}");
+                    if (altBorderClr != null) Console.WriteLine($"       替代边框色: {altBorderClr}");
+
+                    // 边框属性
+                    string borderW = ChildText(o, "BorderWidth");
+                    string dashType = ChildText(o, "DashType");
+                    if (borderW != null) Console.WriteLine($"       边框宽度: {borderW}");
+                    if (dashType != null) Console.WriteLine($"       线型: {dashType}");
+
+                    // 字体属性（如果有）
+                    var fontEl = o.Descendants().FirstOrDefault(x => x.Name.LocalName == "Font" || x.Name.LocalName == "HmiFontPart");
+                    if (fontEl != null)
+                    {
+                        string fontName = ChildText(fontEl, "FontName") ?? ChildText(fontEl, "Name");
+                        string fontSize = ChildText(fontEl, "Size");
+                        string bold = ChildText(fontEl, "Bold") ?? ChildText(fontEl, "Weight");
+                        string italic = ChildText(fontEl, "Italic");
+                        string underline = ChildText(fontEl, "Underline");
+                        string strikeout = ChildText(fontEl, "StrikeOut");
+                        Console.WriteLine($"       字体: {fontName ?? "?"} {fontSize ?? "?"}pt");
+                        if (bold != null && bold.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 粗体");
+                        if (italic != null && italic.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 斜体");
+                        if (underline != null && underline.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 下划线");
+                        if (strikeout != null && strikeout.Equals("true", StringComparison.OrdinalIgnoreCase)) Console.WriteLine("         ✓ 删除线");
+                    }
+
+                    // 文本内容（如果有）
+                    string text = ChildText(o, "Text");
+                    if (text != null)
+                    {
+                        // 截断过长的文本
+                        if (text.Length > 50) text = text.Substring(0, 47) + "...";
+                        Console.WriteLine($"       文本: \"{text}\"");
+                    }
+
+                    // 变量绑定
+                    string tagRef = FindTagRef(o);
+                    if (tagRef != null) Console.WriteLine($"       绑定变量: {tagRef}");
+
+                    // 透明度
+                    string opacity = ChildText(o, "Opacity");
+                    if (opacity != null) Console.WriteLine($"       不透明度: {opacity}");
+
+                    // 可见性
+                    string visible = ChildText(o, "Visible");
+                    if (visible != null) Console.WriteLine($"       可见: {visible}");
+
+                    // 旋转
+                    string rotation = ChildText(o, "RotationAngle") ?? ChildText(o, "Rotation");
+                    if (rotation != null) Console.WriteLine($"       旋转角度: {rotation}°");
+
+                    // 圆角（矩形专用）
+                    var cornersEl = o.Descendants().FirstOrDefault(x => x.Name.LocalName == "Corners");
+                    if (cornersEl != null)
+                    {
+                        string tl = ChildText(cornersEl, "TopLeftRadius");
+                        string tr = ChildText(cornersEl, "TopRightRadius");
+                        string bl = ChildText(cornersEl, "BottomLeftRadius");
+                        string br = ChildText(cornersEl, "BottomRightRadius");
+                        if (tl != null || tr != null || bl != null || br != null)
+                            Console.WriteLine($"       圆角: TL={tl ?? "0"} TR={tr ?? "0"} BL={bl ?? "0"} BR={br ?? "0"}");
+                    }
+                }
+            }
+
+            // 统计摘要
+            Console.WriteLine();
+            Console.WriteLine("  === 布局统计 ===");
+            Console.WriteLine($"  • 控件类型分布: {string.Join(", ", grouped.Select(g => $"{g.Key}×{g.Count()}"))}");
+
+            // 检测重叠控件
+            var overlapping = DetectOverlappingControls(objs);
+            if (overlapping.Count > 0)
+            {
+                Console.WriteLine($"  • 重叠控件: {overlapping.Count} 对");
+                foreach (var pair in overlapping.Take(5))
+                {
+                    Console.WriteLine($"    - {pair.Item1} 与 {pair.Item2}");
+                }
+                if (overlapping.Count > 5) Console.WriteLine($"    ... 还有 {overlapping.Count - 5} 对");
+            }
+            else
+            {
+                Console.WriteLine("  • 重叠控件: 无");
+            }
+        }
+
+        // 检测重叠控件
+        private static List<Tuple<string, string>> DetectOverlappingControls(List<XElement> objs)
+        {
+            var result = new List<Tuple<string, string>>();
+            var rects = new List<Tuple<string, int, int, int, int>>();
+
+            foreach (var o in objs)
+            {
+                string name = ChildText(o, "ObjectName") ?? ChildText(o, "Name") ?? "?";
+                if (!int.TryParse(ChildText(o, "Left") ?? ChildText(o, "X"), out int left)) continue;
+                if (!int.TryParse(ChildText(o, "Top") ?? ChildText(o, "Y"), out int top)) continue;
+                if (!int.TryParse(ChildText(o, "Width"), out int width)) continue;
+                if (!int.TryParse(ChildText(o, "Height"), out int height)) continue;
+                rects.Add(Tuple.Create(name, left, top, width, height));
+            }
+
+            for (int i = 0; i < rects.Count; i++)
+            {
+                for (int j = i + 1; j < rects.Count; j++)
+                {
+                    var a = rects[i];
+                    var b = rects[j];
+                    // 检查矩形重叠
+                    if (a.Item2 < b.Item2 + b.Item4 && a.Item2 + a.Item4 > b.Item2 &&
+                        a.Item3 < b.Item3 + b.Item5 && a.Item3 + a.Item5 > b.Item3)
+                    {
+                        result.Add(Tuple.Create(a.Item1, b.Item1));
+                    }
+                }
+            }
+            return result;
+        }
+
         // [接入点-后续方法]
 
         private static string Safe(Func<object> f)

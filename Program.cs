@@ -234,6 +234,10 @@ namespace TiaMcp
                         if (args.Length < 2) { Console.WriteLine("用法: hmi-read-screen <画面名>"); return 1; }
                         return HmiReads.HmiReadScreen(args[1]);
 
+                    case "hmi-read-screen-layout":
+                        if (args.Length < 2) { Console.WriteLine("用法: hmi-read-screen-layout <画面名>"); return 1; }
+                        return HmiReads.HmiReadScreenLayout(args[1]);
+
                     case "hmi-find-unused-tags":
                         return HmiReads.HmiFindUnusedTags();
 
@@ -270,7 +274,7 @@ namespace TiaMcp
                         Console.WriteLine("可用命令：");
                         Console.WriteLine("  读取: list | read-tags | read-udts | export-source <块> [目录] | export-xml <块> [目录] | block-info <块> | hmi-probe");
                         Console.WriteLine("  硬件: device-list | device-info [设备名] | device-modules [设备名] | device-network [设备名] | library-list");
-                        Console.WriteLine("  HMI: hmi-list | hmi-read-tags [--table 名][--filter 子串] | hmi-read-screens | hmi-read-screen <名> | hmi-read-templates | hmi-read-connections | hmi-export-all <目录> | hmi-find-unused-tags | hmi-tag-usage <变量>");
+                        Console.WriteLine("  HMI: hmi-list | hmi-read-tags [--table 名][--filter 子串] | hmi-read-screens | hmi-read-screen <名> | hmi-read-screen-layout <名> | hmi-read-templates | hmi-read-connections | hmi-export-all <目录> | hmi-find-unused-tags | hmi-tag-usage <变量>");
                         Console.WriteLine("  HMI写: hmi-write-tags <清单>[--dry-run] | hmi-delete-tags <清单>[--dry-run] | hmi-export-screen <名> <目录> | hmi-import-screen <xml>[--dry-run] | hmi-delete-screen <名>[--dry-run]");
                         Console.WriteLine("  HMI模板/列表: hmi-export-template <名> <目录> | hmi-import-template <xml>[--dry-run] | hmi-delete-template <名>[--dry-run] | hmi-import-list <xml>[--text|--graphic][--dry-run] | hmi-delete-list <名>[--text|--graphic][--dry-run]");
                         Console.WriteLine("  排查: where-used <符号> | block-deps <块> | find-unused | call-tree <块> | callers-tree <块> | crossref-report");
