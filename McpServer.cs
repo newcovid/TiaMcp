@@ -167,10 +167,9 @@ namespace TiaMcp
             }
         }
 
-        // 工具的有效"文件路径"入参名: 显式 PathParam 优先; 否则 TextParam 以 "Text" 结尾时自动派生 <名>Path; 都不满足回退 <名>Path/null
+        // 工具的有效"文件路径"入参名: TextParam 以 "Text" 结尾时自动派生 <名>Path（如 sclText->sclPath）; 否则回退 <名>Path/null
         private static string PathParamName(ToolDef t)
         {
-            if (!string.IsNullOrEmpty(t.PathParam)) return t.PathParam;
             if (t.TextParam == null) return null;
             if (t.TextParam.EndsWith("Text", StringComparison.Ordinal))
                 return t.TextParam.Substring(0, t.TextParam.Length - 4) + "Path";
@@ -304,7 +303,6 @@ namespace TiaMcp
             public string TextParam;                    // inline 文本入参名（写临时文件，路径作首个位置参）
             public string TextExt = ".txt";
             public bool Persist;                        // true=该工具改的是内存中的项目,须 project-save 才落盘(tools/list 自动追加统一提示)
-            public string PathParam;                    // 显式路径入参名(兜底); 未给且 TextParam 以 Text 结尾则自动派生 <名>Path
             public Dictionary<string, string> P = new Dictionary<string, string>(); // 参数/旗标名->描述（覆盖 Schema 默认；零上下文 AI 选参填参的关键）
         }
 
