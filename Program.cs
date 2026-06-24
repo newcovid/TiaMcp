@@ -53,8 +53,8 @@ namespace TiaMcp
                         return Commands.ExportSource(args[1], args.Length >= 3 ? args[2] : null);
 
                     case "import-scl":
-                        if (args.Length < 2) { Console.WriteLine("用法: import-scl <scl文件路径>"); return 1; }
-                        return Commands.ImportScl(args[1]);
+                        if (args.Length < 2) { Console.WriteLine("用法: import-scl <scl文件路径> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.ImportScl(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "compile":
                         if (args.Length < 2) { Console.WriteLine("用法: compile <块名>"); return 1; }
@@ -86,8 +86,8 @@ namespace TiaMcp
                         return Reads.ReadUdts();
 
                     case "import-xml":
-                        if (args.Length < 2) { Console.WriteLine("用法: import-xml <SimaticML文件>"); return 1; }
-                        return Commands.ImportXml(args[1]);
+                        if (args.Length < 2) { Console.WriteLine("用法: import-xml <SimaticML文件> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.ImportXml(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "delete-block":
                         if (args.Length < 2) { Console.WriteLine("用法: delete-block <块名> [--dry-run] [--force]"); return 1; }
@@ -176,20 +176,20 @@ namespace TiaMcp
                         return Commands.ExportUdt(args[1], args.Length >= 3 ? args[2] : null);
 
                     case "import-udt":
-                        if (args.Length < 2) { Console.WriteLine("用法: import-udt <.udt文件>"); return 1; }
-                        return Commands.ImportUdt(args[1]);
+                        if (args.Length < 2) { Console.WriteLine("用法: import-udt <.udt文件> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.ImportUdt(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "write-tags":
-                        if (args.Length < 2) { Console.WriteLine("用法: write-tags <清单文件 表名|变量名|类型|地址>"); return 1; }
-                        return Commands.WriteTags(args[1]);
+                        if (args.Length < 2) { Console.WriteLine("用法: write-tags <清单文件 表名|变量名|类型|地址> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.WriteTags(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "delete-tags":
-                        if (args.Length < 2) { Console.WriteLine("用法: delete-tags <清单文件 表名|变量名 或 变量名> [--dry-run]"); return 1; }
-                        return Commands.DeleteTags(args[1], args.Contains("--dry-run"));
+                        if (args.Length < 2) { Console.WriteLine("用法: delete-tags <清单文件 表名|变量名 或 变量名> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.DeleteTags(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "edit-tags":
-                        if (args.Length < 2) { Console.WriteLine("用法: edit-tags <清单文件 表名|变量名|新类型|新地址> [--dry-run]"); return 1; }
-                        return Commands.EditTags(args[1], args.Contains("--dry-run"));
+                        if (args.Length < 2) { Console.WriteLine("用法: edit-tags <清单文件 表名|变量名|新类型|新地址> [--dry-run] [--device <PLC名>]"); return 1; }
+                        return Commands.EditTags(args[1], args.Contains("--dry-run"), GetOpt(args, "--device"));
 
                     case "hmi-probe":
                         // 只读探测 HMI 设备；可选 --no-screen-export 跳过画面导出试探

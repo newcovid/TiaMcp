@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Siemens.Engineering;
@@ -145,6 +146,7 @@ namespace TiaMcp
                     string name = kvp.Key, type = kvp.Value;
                     if (type == "OB") continue;                       // OB 是入口，天然没人调用
                     if (idx.Scan.Protected.Contains(name)) continue;  // 受保护块不下结论
+                    if (idx.Scan.IsFailed(name)) continue;            // 导出失败块逻辑未读，引用未知，不下结论（同受保护）
                     if (referenced.Contains(name)) continue;          // 有人引用
                     if (type.EndsWith("DB")) unusedDb.Add($"{name} ({type})");
                     else unusedCode.Add($"{name} ({type})");
@@ -156,7 +158,7 @@ namespace TiaMcp
                 Console.WriteLine($"-- 未被引用的 DB：{unusedDb.Count} 个 --");
                 foreach (var x in unusedDb.OrderBy(a => a, StringComparer.OrdinalIgnoreCase)) Console.WriteLine("  " + x);
                 Console.WriteLine();
-                Console.WriteLine("⚠ 仅按 PLC 块/DB 间的引用判断；HMI/外部/间接调用、以及受保护块的内部引用未计入，删除前务必人工复核。");
+                Console.WriteLine("⚠ 仅按 PLC 块/DB 间的引用判断；HMI/外部/间接调用、以及受保护块/导出失败块的内部引用未计入，删除前务必人工复核。");
                 PrintDiagnostics(idx.Scan);
                 return 0;
             }
@@ -229,6 +231,15 @@ namespace TiaMcp
             public Dictionary<string, string> InstanceOf =
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // 背景DB名 -> 其FB名
             public int Scanned;
+
+            // 导出失败块名的 O(1) 查询（懒构建）：这些块逻辑没读出来，引用未知，不能像普通块那样下结论。
+            private HashSet<string> _failedSet;
+            public bool IsFailed(string name)
+            {
+                if (_failedSet == null)
+                    _failedSet = new HashSet<string>(Failed.Select(f => f.Key), StringComparer.OrdinalIgnoreCase);
+                return _failedSet.Contains(name);
+            }
         }
 
         /// <summary>
@@ -310,7 +321,9 @@ namespace TiaMcp
             {
                 var deps = ExtractReferencedNames(text, kind);
                 deps.Remove(blk.Name); // 去掉自身引用
-                idx.Deps[blk.Name] = deps;
+                // 多 PLC 同名块：合并两者的依赖而非后者覆盖前者，避免 find-unused 丢失其中一个块的引用边。
+                if (idx.Deps.TryGetValue(blk.Name, out var prev)) prev.UnionWith(deps);
+                else idx.Deps[blk.Name] = deps;
             });
             return idx;
         }
@@ -322,6 +335,7 @@ namespace TiaMcp
             Console.WriteLine($"{indent}{name} ({type})");
 
             if (idx.Scan.Protected.Contains(name)) { Console.WriteLine($"{indent}  …受保护，调用未知"); return; }
+            if (idx.Scan.IsFailed(name)) { Console.WriteLine($"{indent}  …导出失败，调用未知"); return; }
             if (!idx.Deps.ContainsKey(name)) return;
             if (!stack.Add(name)) { Console.WriteLine($"{indent}  …(递归，已展开过)"); return; }
 
@@ -471,19 +485,52 @@ namespace TiaMcp
         }
 
         /// <summary>
-        /// 去掉 SCL 中"非代码"文本——块注释 (* *)、字符串字面量 '...'、行注释 //，
-        /// 避免它们里面出现的 "名字" 被误当成引用。顺序：块注释→字符串→行注释
-        /// （先去字符串，避免字符串里的 // 被当行注释；'' 是 SCL 里单引号的转义）。
+        /// 去掉 SCL 中"非代码"文本——块注释 (* *)、行注释 //、字符串字面量 '...'，
+        /// 避免它们里面出现的 "名字" 被误当成引用。
+        ///
+        /// 用【单次从左到右扫描】而非串联 Regex.Replace：注释与字符串谁先开始谁先生效，
+        /// 两个方向同时正确——既不会让字符串里的 (* / *) 被当块注释吞掉真实代码（旧串联实现的 bug），
+        /// 也不会让块注释里落单的单引号(it's/motor's)与后文单引号配对吃掉中间代码。
+        /// '' 是 SCL 里字符串内单引号的转义，不结束字符串。
         /// </summary>
         private static string StripSclNonCode(string scl)
         {
             if (string.IsNullOrEmpty(scl)) return scl;
-            // 顺序：块注释→行注释→字符串。先去注释，避免注释里落单的单引号(it's / motor's)
-            // 与后文某个单引号配对、把中间的真实代码("块名"引用)整段吞掉而漏报引用。
-            scl = Regex.Replace(scl, @"\(\*.*?\*\)", " ", RegexOptions.Singleline); // 块注释，可跨行
-            scl = Regex.Replace(scl, @"//[^\r\n]*", " ");                            // 行注释
-            scl = Regex.Replace(scl, @"'(?:[^'\r\n]|'')*'", " ");                    // 字符串字面量 '...'（不跨行，贴合 SCL 语义）
-            return scl;
+            var sb = new StringBuilder(scl.Length);
+            int i = 0, n = scl.Length;
+            while (i < n)
+            {
+                char c = scl[i];
+                if (c == '(' && i + 1 < n && scl[i + 1] == '*')          // 块注释 (* ... *)，可跨行
+                {
+                    i += 2;
+                    while (i + 1 < n && !(scl[i] == '*' && scl[i + 1] == ')')) i++;
+                    i = Math.Min(i + 2, n);
+                    sb.Append(' ');
+                }
+                else if (c == '/' && i + 1 < n && scl[i + 1] == '/')     // 行注释 // ...
+                {
+                    i += 2;
+                    while (i < n && scl[i] != '\r' && scl[i] != '\n') i++;
+                    sb.Append(' ');
+                }
+                else if (c == '\'')                                       // 字符串 '...'，'' 为转义
+                {
+                    i++;
+                    while (i < n)
+                    {
+                        if (scl[i] == '\'')
+                        {
+                            if (i + 1 < n && scl[i + 1] == '\'') { i += 2; continue; } // 转义的 ''
+                            i++; break;
+                        }
+                        i++;
+                    }
+                    sb.Append(' ');
+                }
+                else { sb.Append(c); i++; }
+            }
+            return sb.ToString();
         }
 
         private static string ShortReason(Exception ex)

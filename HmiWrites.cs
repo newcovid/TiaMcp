@@ -25,6 +25,7 @@ namespace TiaMcp
         public static int WriteTags(string listFile, bool dryRun)
         {
             if (listFile == null || !File.Exists(listFile)) { Console.WriteLine("找不到清单文件: " + listFile); return 1; }
+            if (IoUtil.LooksEncrypted(File.ReadAllBytes(listFile))) { Console.WriteLine("清单是密文（疑被 E-SafeNet 加密），请用明文。"); return 3; }
             var lines = ParseLines(listFile);
             if (lines.Count == 0) { Console.WriteLine("清单为空（每行: 表名 | 变量名 | 连接 | PLC符号 | [访问模式] | [注释] | [类型] | [采集周期]）。访问模式=Absolute 时第4列填绝对地址(如 %M0.0)且第7列[类型]必填。"); return 1; }
 
@@ -77,6 +78,8 @@ namespace TiaMcp
                         string typeOverride = (f.Length > 6 && f[6].Length > 0) ? f[6] : null;
                         string cycle = (f.Length > 7 && f[7].Length > 0) ? f[7] : null; // 采集周期名(如 "1 s"/"100 ms"/"500 ms"),空=沿用模板/现值
                         bool absolute = string.Equals(access, "Absolute", StringComparison.OrdinalIgnoreCase);
+                        if (string.IsNullOrWhiteSpace(name))
+                        { Line("错", "变量名为空（每行需: 表名|变量名|连接|PLC符号|...）"); errors++; continue; }
                         // 绝对地址模式: 第4列 plc 当成 LogicalAddress(如 %M0.0/%DB1.DBX0.0),无 PLC 符号可解析类型,故必须给[类型]列
                         if (absolute && typeOverride == null)
                         { Line("错", name + " 访问模式=Absolute 时第4列为绝对地址,必须在第7列[类型]显式给出 S7 类型(如 Bool/Int/Real)"); errors++; continue; }
@@ -93,8 +96,15 @@ namespace TiaMcp
                             { Line("错", name + " 现有变量无 PLC 绑定结构(LinkList/ControllerTag/Connection)，无法改绑"); errors++; continue; }
                             // 改绑同样要按新 PLC 符号重定类型(否则沿用旧类型与新符号不符,同根因)
                             string note = SetTagType(existing, plc, typeOverride, plcs, dbCache, ref donorIndex, hmi);
-                            if (!dryRun) { SetBinding(existing, conn, plc, access); if (comment != null) SetComment(existing, comment); if (cycle != null) SetLinkName(existing, "AcquisitionCycle", cycle); changed = true; }
-                            Line("改", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}"); updated++;
+                            string warnU = "";
+                            if (!dryRun)
+                            {
+                                SetBinding(existing, conn, plc, access);
+                                if (comment != null && !SetComment(existing, comment)) warnU += " [警告]注释未写入(变量无Comment结构)";
+                                if (cycle != null && !SetLinkName(existing, "AcquisitionCycle", cycle)) warnU += " [警告]采集周期未写入(变量无AcquisitionCycle链接)";
+                                changed = true;
+                            }
+                            Line("改", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}{warnU}"); updated++;
                         }
                         else
                         {
@@ -106,11 +116,13 @@ namespace TiaMcp
                             SetBinding(clone, conn, plc, access);
                             // 关键修复:克隆继承模板(本表首个变量)的类型四元组,必须按所绑 PLC 符号真实类型重写,否则类型不符被拒。
                             string note = SetTagType(clone, plc, typeOverride, plcs, dbCache, ref donorIndex, hmi);
-                            if (comment != null) SetComment(clone, comment);
-                            if (cycle != null) SetLinkName(clone, "AcquisitionCycle", cycle);
+                            string warnC = "";
+                            if (comment != null && !SetComment(clone, comment)) warnC += " [警告]注释未写入(模板无Comment结构)";
+                            if (cycle != null && !SetLinkName(clone, "AcquisitionCycle", cycle)) warnC += " [警告]采集周期未写入(模板无AcquisitionCycle链接)";
                             RenumberIds(clone, ref maxId);
+                            tagEls.Add(clone);  // F17:加入快照,同批次后续同名行命中走改绑、不再重复克隆出同名变量
                             if (!dryRun) { template.Parent.Add(clone); changed = true; }
-                            Line("建", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}"); created++;
+                            Line("建", $"{name}  conn={conn} {bindLabel}{(cycle != null ? " 周期=" + cycle : "")}  {note}{warnC}"); created++;
                         }
                     }
 
@@ -271,12 +283,14 @@ namespace TiaMcp
             var c = al?.Elements().FirstOrDefault(e => e.Name.LocalName == key);
             if (c != null) c.Value = val;
         }
-        private static void SetLinkName(XElement tagEl, string linkLocalName, string nameVal)
+        // 返回 true=写入成功；false=该链接/Name 不存在于(克隆的)模板，调用方据此告警而非假成功(F08)。
+        private static bool SetLinkName(XElement tagEl, string linkLocalName, string nameVal)
         {
             var ll = tagEl.Elements().FirstOrDefault(e => e.Name.LocalName == "LinkList");
             var link = ll?.Elements().FirstOrDefault(e => e.Name.LocalName == linkLocalName);
             var nm = link?.Elements().FirstOrDefault(e => e.Name.LocalName == "Name");
-            if (nm != null) nm.Value = nameVal;
+            if (nm == null) return false;
+            nm.Value = nameVal; return true;
         }
         private static string AttrOf(XElement tagEl, string key)
         {
@@ -292,15 +306,17 @@ namespace TiaMcp
             return nm != null && !string.IsNullOrWhiteSpace(nm.Value) ? nm.Value.Trim() : null;
         }
 
-        // 写变量注释(MultilingualText CompositionName="Comment" 首个语言项)。结构缺失则静默跳过(不致命)。
-        private static void SetComment(XElement tagEl, string comment)
+        // 写变量注释(MultilingualText CompositionName="Comment" 首个语言项)。
+        // 返回 true=写入；false=Comment 结构缺失(调用方告警，不再假成功 F08)。
+        private static bool SetComment(XElement tagEl, string comment)
         {
             var ol = tagEl.Elements().FirstOrDefault(e => e.Name.LocalName == "ObjectList");
             var mt = ol?.Elements().FirstOrDefault(e => e.Name.LocalName == "MultilingualText"
                         && e.Attribute("CompositionName")?.Value == "Comment");
             var item = mt?.Descendants().FirstOrDefault(e => e.Name.LocalName == "MultilingualTextItem");
             var text = item?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Text");
-            if (text != null) text.Value = comment;
+            if (text == null) return false;
+            text.Value = comment; return true;
         }
 
         // 项目内现有变量按 PLC 侧 DataType 名建索引(donor):内置 S7Map 未覆盖的类型用它兜底——
@@ -521,6 +537,7 @@ namespace TiaMcp
         public static int DeleteTags(string listFile, bool dryRun)
         {
             if (listFile == null || !File.Exists(listFile)) { Console.WriteLine("找不到清单文件: " + listFile); return 1; }
+            if (IoUtil.LooksEncrypted(File.ReadAllBytes(listFile))) { Console.WriteLine("清单是密文（疑被 E-SafeNet 加密），请用明文。"); return 3; }
             var lines = ParseDeleteLines(listFile);
             if (lines.Count == 0) { Console.WriteLine("清单为空（每行: [表名 |] 变量名）。"); return 1; }
 
@@ -805,8 +822,22 @@ namespace TiaMcp
             byte[] bytes = File.ReadAllBytes(xmlFile);
             if (IoUtil.LooksEncrypted(bytes)) { Console.WriteLine("该 XML 像密文，无法导入。"); return 1; }
             string xml = IoUtil.DecodeUtf8StripBom(bytes);
-            if (kind == null) // 未指定则从 XML 推断
-                kind = xml.IndexOf("GraphicList", StringComparison.OrdinalIgnoreCase) >= 0 ? "graphic" : "text";
+            if (kind == null) // 未指定则按 XML 列表元素的 LocalName 推断
+            {
+                // 不能用整串子串匹配 "GraphicList"：命名空间 Hmi.TextGraphicList.* 本身含该子串会误判文本列表。
+                // 按元素 LocalName 的结尾区分：...GraphicList(图形) vs ...TextList(文本)。
+                kind = "text";
+                try
+                {
+                    var doc = XDocument.Parse(xml);
+                    var listEl = doc.Descendants().FirstOrDefault(e =>
+                        e.Name.LocalName.EndsWith("GraphicList", StringComparison.OrdinalIgnoreCase)
+                     || e.Name.LocalName.EndsWith("TextList", StringComparison.OrdinalIgnoreCase));
+                    if (listEl != null && listEl.Name.LocalName.EndsWith("GraphicList", StringComparison.OrdinalIgnoreCase))
+                        kind = "graphic";
+                }
+                catch { }
+            }
 
             using (var s = TiaSession.AttachFirst())
             {

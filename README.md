@@ -1,14 +1,14 @@
 # TIA-MCP · 用自然语言操作西门子 TIA Portal V18
 
 > 一个 C# 控制台程序，通过 **Siemens TIA Portal V18 Openness** 读取/编辑/分析运行中的 **PLC + HMI** 工程。
-> **命令行子命令 + MCP(stdio) 服务器两形态均已实现**——把 **54 条命令**包成 MCP 工具，供 Claude Code 等用自然语言调用。
+> **命令行子命令 + MCP(stdio) 服务器两形态均已实现**——把 **60 条命令**包成 MCP 工具，供 Claude Code 等用自然语言调用。
 > 自用 / 单机 / 单用户。目标工程：单台 **S7-1200**（约 118 块，LAD+SCL 混用，大量中文名）+ 1 台 **KTP700 Basic** HMI。
 
 **状态：阶段 1–5 全部完成**（连接 → SCL/STL 读写 → 全语言读 → 图形/HMI 写 → 排查套件 → MCP 打包）。
 
 ---
 
-## 能做什么（54 工具，逐条用法+输出见 [`docs/COMMAND-MANUAL.md`](docs/COMMAND-MANUAL.md)）
+## 能做什么（60 工具，逐条用法+输出见 [`docs/COMMAND-MANUAL.md`](docs/COMMAND-MANUAL.md)）
 
 - **读取/导出**：列块、读变量(含中文注释)/UDT、导出 SCL/STL 源码、导出任意块/DB 的 SimaticML XML、块元数据。
 - **硬件/库**：设备清单、CPU/模块订货号固件、机架/槽位/模块树(本地+分布式IO)、子网/IoSystem/IP、项目库/全局库。
@@ -71,7 +71,7 @@
 | 文件 | 作用 |
 |---|---|
 | `Program.cs` | 入口：先注册程序集解析器（不碰 Siemens 类型），再 `mcp`→`McpServer` 或 `Dispatch(argv)` |
-| `McpServer.cs` | 手写 stdio JSON-RPC；54 命令登记成工具，捕获命令 stdout 作工具结果，不改命令本身 |
+| `McpServer.cs` | 手写 stdio JSON-RPC；60 命令登记成工具，捕获命令 stdout 作工具结果，不改命令本身 |
 | `OpennessAssemblyResolver.cs` | 把 `Siemens.*` 重定向到 PublicAPI\V18（注册表自动定位 + 兜底路径）|
 | `TiaSession.cs` | attach 实例 → 取项目 → FindPlcs/FindHmis/FindBlock/IsKnowHowProtected |
 | `Commands.cs` / `Reads.cs` / `Hardware.cs` / `Library.cs` | PLC 读写编译 / 变量 UDT / 硬件设备 / 库 |
@@ -92,7 +92,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/COMMAND-MANUAL.md`](docs/COMMAND-MANUAL.md) | **54 命令逐条**：用途/输入/输出示例/退出码/MCP备注 + MCP I/O 约定 + Openness 不可行边界 |
+| [`docs/COMMAND-MANUAL.md`](docs/COMMAND-MANUAL.md) | **60 命令逐条**：用途/输入/输出示例/退出码/MCP备注 + MCP I/O 约定 + Openness 不可行边界 |
 | [`docs/MCP-SETUP.md`](docs/MCP-SETUP.md) | MCP 接入：Claude Code 配置 / 协议 / 前提 / 限制 / 自检 |
 | [`docs/AUDIT-2026-06-04.md`](docs/AUDIT-2026-06-04.md) | 指令集审计：覆盖矩阵 / 新命令路线图 / 手册优化 / 缺陷修复日志 |
 | `PROGRESS.md` / `CLAUDE.md` | 进度状态 / 给 AI 的工程约定 |

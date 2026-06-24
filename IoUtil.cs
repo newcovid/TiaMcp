@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace TiaMcp
@@ -24,17 +25,30 @@ namespace TiaMcp
 
         /// <summary>
         /// 判断字节是否像密文（被 E-SafeNet 加密）。
-        /// 主信号：实测加密信封头前若干字节含 ASCII "E-SafeNet"/"LOCK"。
-        /// 次信号：明文 .scl/.awl/.xml(UTF-8) 不会含 NUL 字节；密文常含 NUL。
+        /// 主信号：实测加密信封头含 ASCII "E-SafeNet"/"LOCK"（扫前 512 字节）。
+        /// 次信号：明文 UTF-8(.scl/.awl/.xml) 不含 NUL 字节；密文常含 NUL。
+        /// 例外：UTF-16/UTF-32 明文以 BOM 开头且天然含 NUL，不是密文——先识别其 BOM 放行，
+        ///       避免把合法的非 UTF-8 明文误判成密文(E-SafeNet 密文不会以文本 BOM 起头)。
         /// </summary>
         public static bool LooksEncrypted(byte[] bytes)
         {
             if (bytes == null || bytes.Length == 0) return false;
-            int n = Math.Min(64, bytes.Length);
+            int n = Math.Min(512, bytes.Length);
             if (Encoding.ASCII.GetString(bytes, 0, n).IndexOf("SafeNet", StringComparison.OrdinalIgnoreCase) >= 0)
                 return true;
+            if (HasUnicodeBom(bytes)) return false;   // UTF-16/UTF-32 明文，NUL 是正常字节
             int probe = Math.Min(512, bytes.Length);
             for (int i = 0; i < probe; i++) if (bytes[i] == 0) return true;
+            return false;
+        }
+
+        // UTF-16 LE(FF FE)/BE(FE FF) 或 UTF-32 LE(FF FE 00 00)/BE(00 00 FE FF) 的 BOM。
+        private static bool HasUnicodeBom(byte[] b)
+        {
+            if (b.Length >= 4 && b[0] == 0xFF && b[1] == 0xFE && b[2] == 0x00 && b[3] == 0x00) return true; // UTF-32 LE
+            if (b.Length >= 4 && b[0] == 0x00 && b[1] == 0x00 && b[2] == 0xFE && b[3] == 0xFF) return true; // UTF-32 BE
+            if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return true; // UTF-16 LE
+            if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return true; // UTF-16 BE
             return false;
         }
 
@@ -85,6 +99,18 @@ namespace TiaMcp
                 System.Threading.Thread.Sleep(50);
             }
             throw new IOException("临时文件写出后被加密/篡改（疑似全盘扫描），重试多次仍失败。");
+        }
+
+        /// <summary>SHA-256 十六进制小写，供大产物指针标注（消费者据此校验未被篡改/加密）。</summary>
+        public static string Sha256Hex(byte[] bytes)
+        {
+            using (var sha = SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(bytes);
+                var sb = new StringBuilder(h.Length * 2);
+                foreach (byte b in h) sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
         }
 
         private static bool BytesEqual(byte[] a, byte[] b)

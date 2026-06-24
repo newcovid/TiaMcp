@@ -1,6 +1,6 @@
 # TIA-MCP 接入文档（MCP stdio 服务器）
 
-把本工具的 **54 条命令**包成一个 **MCP (Model Context Protocol) stdio 服务器**，供 Claude Code / Claude Desktop 等 MCP 客户端用自然语言调用，直接读写运行中的 TIA Portal V18 工程。
+把本工具的 **60 条命令**包成一个 **MCP (Model Context Protocol) stdio 服务器**，供 Claude Code / Claude Desktop 等 MCP 客户端用自然语言调用，直接读写运行中的 TIA Portal V18 工程。
 
 > 命令逐条用法+输出示例见 [`COMMAND-MANUAL.md`](COMMAND-MANUAL.md)；审计与设计见 [`AUDIT-2026-06-04.md`](AUDIT-2026-06-04.md)。
 
@@ -12,7 +12,7 @@
 - **传输**：stdio 上的 **行分隔 JSON-RPC 2.0**（每条消息一行 JSON，无 Content-Length 帧）。
 - **协议版本**：`2024-11-05`。`serverInfo` = `{name: "tia-mcp", version: "1.0.0"}`。
 - **JSON 库**：.NET Framework 自带 `System.Web.Script.Serialization.JavaScriptSerializer`（**零 NuGet 依赖**，clone 即可编译）。
-- **实现**：每条工具调用 → 组装成 argv → 重定向捕获该命令的 stdout → 调现有 `Program.Dispatch(argv)` → 把捕获文本作为工具结果返回。**不改动 54 条命令本身**。
+- **实现**：每条工具调用 → 组装成 argv → 重定向捕获该命令的 stdout → 调现有 `Program.Dispatch(argv)` → 把捕获文本作为工具结果返回。**不改动 60 条命令本身**。
 
 ### 支持的方法
 | 方法 | 说明 |
