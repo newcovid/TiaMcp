@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 这是什么
-一个 C# 控制台程序，通过 **Siemens TIA Portal V18 Openness**（Siemens.Engineering.dll）读取/编辑/分析 PLC+HMI 工程。**命令行子命令 + MCP(stdio) 服务器（`TiaMcp.exe mcp`）两形态均已实现**（54 命令，详见 docs/MCP-SETUP.md），供 Claude Code 自然语言调用。自用、单机、单用户。被操作的目标工程：单台 **S7-1200**、约 118 块、**LAD+SCL 混用**、大量中文块名/成员名 + 1 台 KTP700 Basic HMI。
+一个 C# 控制台程序，通过 **Siemens TIA Portal V18 Openness**（Siemens.Engineering.dll）读取/编辑/分析 PLC+HMI 工程。**命令行子命令 + MCP(stdio) 服务器（`TiaMcp.exe mcp`）两形态均已实现**（60 命令，详见 docs/MCP-SETUP.md），供 Claude Code 自然语言调用。自用、单机、单用户。被操作的目标工程：单台 **S7-1200**、约 118 块、**LAD+SCL 混用**、大量中文块名/成员名 + 1 台 KTP700 Basic HMI。
 
 ## 编译 / 运行
 - **编译**：`.\build.ps1`（即 `& "C:\Program Files\dotnet\dotnet.exe" build TiaMcp.csproj -c Release`）。
@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 架构（大图）
 - **`Program.cs`（入口）**：**先**注册 `AppDomain.AssemblyResolve`，**再**分发：`mcp` → `McpServer.Run()`，否则 → `Dispatch(argv)`（switch 在此）。**关键坑**：`Main` 里不能出现任何 `Siemens.Engineering.*` 类型——JIT 进入方法前会解析其类型，那时解析器还没生效。所有 Openness 类型的代码都在 `Dispatch` 及以下（含 McpServer 之外的类）；`McpServer` 自身也不碰 Siemens 类型。
-- **`McpServer.cs`（阶段5）**：手写 stdio JSON-RPC 2.0（不引 SDK），JSON 用 .NET 自带 `System.Web.Script.Serialization`（非 Newtonsoft，零 NuGet）。54 命令登记成 ToolDef，通用组装 argv（位置参/旗标/inline 文本经 %TEMP%），重定向捕获命令 stdout 作工具结果。stdout 被 JSON-RPC 独占，命令输出全程捕获不泄漏。
+- **`McpServer.cs`（阶段5）**：手写 stdio JSON-RPC 2.0（不引 SDK），JSON 用 .NET 自带 `System.Web.Script.Serialization`（非 Newtonsoft，零 NuGet）。60 命令登记成 ToolDef，通用组装 argv（位置参/旗标/inline 文本经 %TEMP%），重定向捕获命令 stdout 作工具结果。stdout 被 JSON-RPC 独占，命令输出全程捕获不泄漏。
 - **`OpennessAssemblyResolver`**：把 `Siemens.*` 重定向到 `D:\Program Files\Siemens\Automation\Portal V18\PublicAPI\V18`。csproj 引用 Siemens.Engineering 用 `<Private>false</Private>`（不拷贝，运行时从那里加载）。
 - **`TiaSession`**：attach 运行中的实例（`TiaPortal.GetProcesses().Attach()`）；暴露当前 Project、FindPlcs（递归 DeviceItems→SoftwareContainer→PlcSoftware）、FindBlock（大小写不敏感）、`IsKnowHowProtected`。
 - **`Commands`**：list / export-source / export-xml / export-udt / import-scl / import-xml / import-udt / write-tags / delete-block(`--dry-run`/`--force`) / compile / compile-device / export-all / **project-save**(把改动落盘，写命令闭环)。
@@ -39,11 +39,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 块调用：`<CallInfo Name="被调块" BlockType="FB|FC">`；背景DB在其 `<Instance>` 下。
 
 ## MCP 打包 I/O 约定（2026-06-04 审计定，详见 docs/COMMAND-MANUAL.md 附录 A/B）
-- **统一返回信封**：`{ok, tool, target{device,defaulted,devicesPresent}, dryRun, summary, data, artifacts[], diagnostics}`。错误用 `{ok:false,errorCode,message}`，errorCode 枚举取代重载 exit code。
+> **实现状态（2026-06-24 校准）**：v1 真实行为：`RunTool` 回**捕获的命令 stdout 原文** + `isError`（命令非零退出码→`isError=true`，不把失败报成成功）；**仍无** `{ok,...}` 完整信封与 errorCode 枚举（小输出保持纯文本）。**已落地**：① 输入侧 `<名>Path`；② 破坏性工具 `dryRun`（含 import-scl/xml/udt + write-tags 预览）；③ **大产物卸载**——命令输出 >16000 字符即写 %TEMP% 明文、回 `[大产物] path/charCount/sha256 + 预览头`（`McpServer.OffloadIfLarge`），治 export-xml/hmi-read-screen 等 token 爆炸；④ PLC 写/导入工具 `--device <名>` 选 PLC；⑤ 密文/BOM 守卫。下面标 `[v2未实现]` 的仅剩"完整 JSON 信封 / errorCode 枚举"。
+- **统一返回信封** `[v2未实现，仅此项]`：`{ok, tool, target{device,defaulted,devicesPresent}, dryRun, summary, data, artifacts[], diagnostics}`。错误用 `{ok:false,errorCode,message}`，errorCode 枚举取代重载 exit code。（现状：回 stdout 原文 + isError；isError 已反映命令退出码；大产物已按下条卸载。）
 - **大产物不内联（输出 + 输入双向）**：
-  - 输出：凡 >~8KB 文本（源码/XML/画面/大消息）写 `%TEMP%` 回 `{path,charCount,sha256}` + 结构化摘要，别灌爆上下文。**污染大户**：hmi-read-screen / export-xml / export-source / hmi-probe（均数万字符）。
+  - 输出 `[已实现]`：命令输出 >16000 字符即写 `%TEMP%` 回 `{path,charCount,sha256}` + 前 2000 字符预览（`McpServer.OffloadIfLarge`）。**污染大户** hmi-read-screen/export-xml/export-source/hmi-probe 现自动卸载；注意卸载文件含命令完整输出(含头尾横幅)，要纯净可 import 的 XML/源码请用对应 export 的 outDir。
   - 输入（2026-06-04 补）：所有 inline 文本导入工具同时接磁盘路径入口 `<名>Path`（`xmlText`↔`xmlPath`、`sclText`↔`sclPath`、`listText`↔`listPath`），**大文件务必走路径**——内联要求 AI 逐字复现整份文本作单个 JSON 实参，画面 XML 常达数十万字符会撞 token 上限/截断（这正是「大文件内联报错」的根因，非 TIA/服务器限制）。机制：`McpServer.PathParamName` 由 TextParam 自动派生（以 `Text` 结尾 → `<名>Path`，`ToolDef.PathParam` 可显式兜底），`BuildArgs` 见路径则直通、不写 TEMP。text/path **二选一**，**都给则路径优先**并在结果前置 `[注意]`，**都不给**干净报错。底层命令零改动（本就按路径读、`LooksEncrypted` 拒密文、`DecodeUtf8StripBom` 容 BOM、对 TIA 二次中转仍 `WriteTempPlaintextVerified` 带 BOM）。
-- **入参** inline 文本或 `<名>Path` 磁盘路径（见上）、named 参数、`targetDevice` 缺省第一个但在 diagnostics.warnings 显式记、破坏性工具必须 `dryRun`。
+- **入参** inline 文本或 `<名>Path` 磁盘路径（见上）、named 参数、破坏性工具必须 `dryRun`（已落地）。`targetDevice`：PLC 写/导入工具(import-scl/xml/udt、write/edit/delete-tags)已加 `--device <名>`(命中=选该 PLC，未命中报错列可选，不传=第一个 + stdout 告警可选项；compile 按块名跨 PLC 查、compile-device/export-all 本就遍历全部，无需)；仍无 diagnostics 结构。device-info/modules/network 不传设备名时**列出全部设备**（非"第一个"）。
 - **Openness 永久不可行边界**（工具说明须写死，防 AI 幻觉）：在线实际值 / force / 诊断缓冲区 / RUN-STOP / Upload / 在线分配PN名IP / 通道级诊断。
 - **MCP 长驻进程优化**：交叉引用应缓存"块名→导出文本/引用集合"索引（现 CLI 每命令独立进程做不到，每次全量导出）。
 

@@ -611,8 +611,11 @@ namespace TiaMcp
                     if (map.Length > 8000)
                     {
                         string outPath = IoUtil.NewTempFile(".txt");
-                        File.WriteAllText(outPath, map, new System.Text.UTF8Encoding(false));
-                        Console.WriteLine($"  [大产物] 全量\"变量->引用画面\"映射 已写 {outPath} (charCount={map.Length})");
+                        var mapBytes = new System.Text.UTF8Encoding(false).GetBytes(map);
+                        File.WriteAllBytes(outPath, mapBytes);
+                        // 落盘明文可能被本机全盘扫描加密：写后立即回校验，提示消费者读前确认（与 export-source 一致）。
+                        string encNote = IoUtil.LooksEncrypted(File.ReadAllBytes(outPath)) ? "  [警告]刚写出已被加密,读取前请重跑本命令" : "";
+                        Console.WriteLine($"  [大产物] 全量\"变量->引用画面\"映射 已写 {outPath} (charCount={map.Length} sha256={IoUtil.Sha256Hex(mapBytes)}){encNote}");
                     }
                     else { Console.WriteLine("  -- 全量映射 --"); Console.Write(map); }
                     Console.WriteLine();

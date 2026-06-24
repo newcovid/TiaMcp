@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Security;                       // SecureString（know-how 保护密码）
 using System.Text;
+using System.Text.RegularExpressions;        // dry-run 块名启发式扫描
+using System.Xml.Linq;                        // dry-run 解析 SimaticML 块名
 using Siemens.Engineering;
 using Siemens.Engineering.Compiler;
 using Siemens.Engineering.SW;
@@ -160,7 +162,7 @@ namespace TiaMcp
         }
 
         // ========== import-scl：明文 SCL -> TEMP(验证) -> 生成块 -> 编译报错 ==========
-        public static int ImportScl(string sclFilePath)
+        public static int ImportScl(string sclFilePath, bool dryRun = false, string device = null)
         {
             if (!File.Exists(sclFilePath)) { Console.WriteLine($"SCL 文件不存在: {sclFilePath}"); return 1; }
 
@@ -177,10 +179,23 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（项目有多个 PLC，默认导入第一个）" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}");
 
                 var before = new HashSet<string>(AllBlockNames(plc.BlockGroup), StringComparer.OrdinalIgnoreCase);
+
+                if (dryRun)
+                {
+                    var names = ScanSclBlockNames(sclText);
+                    Console.WriteLine($"[DRY-RUN] 启发式扫描到 {names.Count} 个块定义（未导入）：");
+                    foreach (var nm in names)
+                        Console.WriteLine($"  {nm}  {(before.Contains(nm) ? "→ 覆盖现有同名块" : "→ 新建")}");
+                    if (names.Count == 0) Console.WriteLine("  (未识别到块头;实际导入仍可能生成块——以去掉 --dry-run 的真实结果为准)");
+                    Console.WriteLine("（预演，未导入。去掉 --dry-run 实际执行。）");
+                    return 0;
+                }
 
                 // 写到 %TEMP% 并校验仍是明文（防全盘扫描），失败自动重试
                 string tempScl = IoUtil.WriteTempPlaintextVerified(sclText, ".scl");
@@ -247,7 +262,7 @@ namespace TiaMcp
         }
 
         // ========== import-xml：把(AI改好的)SimaticML 整块导入，覆盖同名块（图形块的"写"）==========
-        public static int ImportXml(string xmlFilePath)
+        public static int ImportXml(string xmlFilePath, bool dryRun = false, string device = null)
         {
             if (!File.Exists(xmlFilePath)) { Console.WriteLine($"XML 文件不存在: {xmlFilePath}"); return 1; }
             byte[] inBytes = File.ReadAllBytes(xmlFilePath);
@@ -262,10 +277,24 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（多 PLC，默认第一个）" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}");
 
                 var before = new HashSet<string>(AllBlockNames(plc.BlockGroup), StringComparer.OrdinalIgnoreCase);
+
+                if (dryRun)
+                {
+                    var names = ScanXmlBlockNames(xmlText);
+                    Console.WriteLine($"[DRY-RUN] SimaticML 含 {names.Count} 个块（未导入）：");
+                    foreach (var nm in names)
+                        Console.WriteLine($"  {nm}  {(before.Contains(nm) ? "→ Override 覆盖现有" : "→ 新建")}");
+                    if (names.Count == 0) Console.WriteLine("  (未能从 XML 解析出块名——结构可能非标准 SimaticML)");
+                    Console.WriteLine("（预演，未导入。去掉 --dry-run 实际执行。）");
+                    return 0;
+                }
+
                 string tmp = IoUtil.WriteTempPlaintextVerified(xmlText, ".xml");
                 try
                 {
@@ -523,16 +552,18 @@ namespace TiaMcp
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
                 Directory.CreateDirectory(outDir);
-                int ok = 0, fail = 0;
+                int ok = 0, fail = 0, dup = 0;
+                var usedPaths = new HashSet<string>();   // 防跨 PLC 同名表互相覆盖
                 foreach (var kv in plcs)
                 {
                     var grp = kv.Value.WatchAndForceTableGroup;
                     foreach (PlcWatchTable wt in grp.WatchTables)
-                        if (ExportOneXml(fi => wt.Export(fi, ExportOptions.None), Path.Combine(outDir, "Watch_" + MakeSafeFileName(wt.Name) + ".xml"))) ok++; else fail++;
+                        if (ExportOneXml(fi => wt.Export(fi, ExportOptions.None), UniqueExportPath(outDir, "Watch_" + MakeSafeFileName(wt.Name), ".xml", usedPaths, ref dup))) ok++; else fail++;
                     foreach (PlcForceTable ft in grp.ForceTables)
-                        if (ExportOneXml(fi => ft.Export(fi, ExportOptions.None), Path.Combine(outDir, "Force_" + MakeSafeFileName(ft.Name) + ".xml"))) ok++; else fail++;
+                        if (ExportOneXml(fi => ft.Export(fi, ExportOptions.None), UniqueExportPath(outDir, "Force_" + MakeSafeFileName(ft.Name), ".xml", usedPaths, ref dup))) ok++; else fail++;
                 }
                 Console.WriteLine($"导出完成：{ok} 个表 -> {Path.GetFullPath(outDir)}；失败 {fail}（多为'表不一致'/空强制表，需先在博图修复该表；详情见日志）。");
+                if (dup > 0) Console.WriteLine($"[警告] {dup} 个表名重复（多为跨 PLC 同名），已加 _dupN 后缀避免互相覆盖。");
                 Console.WriteLine("监控/强制表=表定义(非运行期活值)。注意：全盘扫描可能稍后加密这些文件，尽快 git add。");
                 return 0;
             }
@@ -647,7 +678,8 @@ namespace TiaMcp
             using (var s = TiaSession.AttachFirst())
             {
                 Directory.CreateDirectory(outDir);
-                int ok = 0, skipped = 0;
+                int ok = 0, skipped = 0, dup = 0;
+                var usedPaths = new HashSet<string>();   // 防同名块(跨组/跨PLC或清洗后重名)平铺互相覆盖
                 foreach (var kv in s.FindPlcs())
                     foreach (var blk in EnumerateAllBlocks(kv.Value.BlockGroup))
                     {
@@ -668,7 +700,7 @@ namespace TiaMcp
                                 blk.Export(new FileInfo(tmp), ExportOptions.None);
                             }
                             string text = IoUtil.ReadPlaintext(tmp);
-                            string outFile = Path.Combine(outDir, MakeSafeFileName(blk.Name) + ext);
+                            string outFile = UniqueExportPath(outDir, MakeSafeFileName(blk.Name), ext, usedPaths, ref dup);
                             File.WriteAllText(outFile, text, new UTF8Encoding(false));
                             ok++;
                         }
@@ -676,6 +708,7 @@ namespace TiaMcp
                         finally { try { File.Delete(tmp); } catch { } }
                     }
                 Console.WriteLine($"导出完成：{ok} 个块 -> {Path.GetFullPath(outDir)}；跳过(受保护/失败) {skipped} 个。");
+                if (dup > 0) Console.WriteLine($"[警告] {dup} 个块名清洗后重复（跨组/跨PLC同名或含非法文件名字符），已加 _dupN 后缀避免互相覆盖。");
                 Console.WriteLine("注意：本机全盘扫描可能稍后加密这些文件，请尽快 git add/commit。");
                 return 0;
             }
@@ -711,7 +744,7 @@ namespace TiaMcp
         }
 
         // ========== import-udt：从明文 .udt 生成/覆盖 UDT ==========
-        public static int ImportUdt(string udtFilePath)
+        public static int ImportUdt(string udtFilePath, bool dryRun = false, string device = null)
         {
             if (!File.Exists(udtFilePath)) { Console.WriteLine($"UDT 文件不存在: {udtFilePath}"); return 1; }
             byte[] inBytes = File.ReadAllBytes(udtFilePath);
@@ -722,8 +755,23 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（多 PLC，默认第一个）" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}");
+
+                if (dryRun)
+                {
+                    var names = ScanUdtNames(text);
+                    var existing = new HashSet<string>(AllUdtNames(plc), StringComparer.OrdinalIgnoreCase);
+                    Console.WriteLine($"[DRY-RUN] 扫描到 {names.Count} 个 UDT 定义（未导入）：");
+                    foreach (var nm in names)
+                        Console.WriteLine($"  {nm}  {(existing.Contains(nm) ? "→ 覆盖现有" : "→ 新建")}");
+                    if (names.Count == 0) Console.WriteLine("  (未识别到 TYPE 头;以去掉 --dry-run 的真实结果为准)");
+                    Console.WriteLine("（预演，未导入。去掉 --dry-run 实际执行。）");
+                    return 0;
+                }
+
                 string tmp = IoUtil.WriteTempPlaintextVerified(text, ".udt");
                 PlcExternalSource src = null;
                 try
@@ -745,7 +793,7 @@ namespace TiaMcp
         }
 
         // ========== write-tags：批量建变量。行格式 表名|变量名|类型|地址，# 注释 ==========
-        public static int WriteTags(string listFile)
+        public static int WriteTags(string listFile, bool dryRun = false, string device = null)
         {
             if (!File.Exists(listFile)) { Console.WriteLine($"清单不存在: {listFile}"); return 1; }
             byte[] inBytes = File.ReadAllBytes(listFile);
@@ -756,8 +804,10 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（多 PLC，默认第一个）" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}" + (dryRun ? "  [DRY-RUN 预演，不写入]" : ""));
                 int created = 0, failed = 0;
                 foreach (var raw in lines)
                 {
@@ -768,6 +818,14 @@ namespace TiaMcp
                     string table = p[0].Trim(), name = p[1].Trim(), type = p[2].Trim();
                     // 地址可空：无地址 = PLC 内部符号变量（手册支持空串地址 Create(name,type,"")）。
                     string addr = p.Length >= 4 ? p[3].Trim() : "";
+                    if (dryRun)
+                    {
+                        PlcTagTable tt = FindTagTableTop(plc, table);
+                        bool tagExists = tt != null && tt.Tags.Find(name) != null;
+                        Console.WriteLine($"  [预] {table}/{name} : {type}{(string.IsNullOrEmpty(addr) ? "（符号变量）" : " @ " + addr)}"
+                            + (tt == null ? "  → 将新建变量表 " + table : (tagExists ? "  → [警告]变量已存在,真实导入会失败" : "")));
+                        created++; continue;
+                    }
                     try
                     {
                         PlcTagTable tt = FindOrCreateTagTable(plc, table);
@@ -778,13 +836,13 @@ namespace TiaMcp
                     }
                     catch (Exception ex) { Logger.Error($"建变量 {name} 失败", ex); Console.WriteLine($"  ! {name} 失败: {ex.Message}"); failed++; }
                 }
-                Console.WriteLine($"完成：新建 {created}，失败 {failed}。");
+                Console.WriteLine($"完成：{(dryRun ? "预览将新建" : "新建")} {created}，失败 {failed}。{(dryRun ? "（预演，未写入。去掉 --dry-run 实际执行。）" : "")}");
                 return failed > 0 ? 2 : 0;
             }
         }
 
         // ========== delete-tags：按清单删 PLC 变量。行 表名|变量名 或 变量名（表名省略=全表搜）==========
-        public static int DeleteTags(string listFile, bool dryRun)
+        public static int DeleteTags(string listFile, bool dryRun, string device = null)
         {
             if (!File.Exists(listFile)) { Console.WriteLine($"清单不存在: {listFile}"); return 1; }
             byte[] inBytes = File.ReadAllBytes(listFile);
@@ -795,8 +853,10 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（多 PLC，默认第一个）" : "") + (dryRun ? "  [DRY-RUN 预演，不删除]" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}" + (dryRun ? "  [DRY-RUN 预演，不删除]" : ""));
                 Console.WriteLine("警告: 删除被程序/HMI 引用的变量会破坏引用方；建议先 where-used 核对。");
 
                 var tables = new List<PlcTagTable>();
@@ -819,7 +879,7 @@ namespace TiaMcp
                     catch (Exception ex) { Console.WriteLine($"  [错] {name} 删除失败: {ex.Message}"); skipped++; Logger.Error("delete-tags", ex); }
                 }
                 Console.WriteLine($"汇总: 删 {deleted} / 跳 {skipped}{(dryRun ? "（预演，未删除）" : "")}");
-                return 0;
+                return skipped > 0 ? 2 : 0;   // 与 edit-tags 一致：有跳过/失败时退出码非零（MCP isError 据此置位）
             }
         }
 
@@ -830,7 +890,7 @@ namespace TiaMcp
         }
 
         // ========== edit-tags：改已有 PLC 变量的类型/地址。行 表名|变量名|新类型|新地址（空=不改该项）==========
-        public static int EditTags(string listFile, bool dryRun)
+        public static int EditTags(string listFile, bool dryRun, string device = null)
         {
             if (!File.Exists(listFile)) { Console.WriteLine($"清单不存在: {listFile}"); return 1; }
             byte[] inBytes = File.ReadAllBytes(listFile);
@@ -841,8 +901,10 @@ namespace TiaMcp
             {
                 var plcs = s.FindPlcs();
                 if (plcs.Count == 0) { Console.WriteLine("没有找到 PLC。"); return 1; }
-                PlcSoftware plc = plcs[0].Value;
-                Console.WriteLine($"目标 PLC: {plcs[0].Key}" + (plcs.Count > 1 ? "（多 PLC，默认第一个）" : "") + (dryRun ? "  [DRY-RUN 预演，不改]" : ""));
+                string selErr, plcLabel;
+                PlcSoftware plc = SelectPlc(plcs, device, out plcLabel, out selErr);
+                if (plc == null) { Console.WriteLine(selErr); return 1; }
+                Console.WriteLine($"目标 PLC: {plcLabel}" + (dryRun ? "  [DRY-RUN 预演，不改]" : ""));
                 var tables = new List<PlcTagTable>();
                 CollectPlcTagTables(plc.TagTableGroup.TagTables, plc.TagTableGroup.Groups, tables);
                 int changed = 0, skipped = 0;
@@ -908,6 +970,21 @@ namespace TiaMcp
 
         // ---------- 私有辅助 ----------
 
+        // F12 选目标 PLC：device 空=第一个(多 PLC 时 label 提示可选项);指定名=精确(大小写不敏感)匹配,找不到回 null + 列可选。
+        private static PlcSoftware SelectPlc(List<KeyValuePair<string, PlcSoftware>> plcs, string device, out string label, out string err)
+        {
+            err = null; label = null;
+            if (!string.IsNullOrEmpty(device))
+            {
+                foreach (var kv in plcs)
+                    if (string.Equals(kv.Key, device, StringComparison.OrdinalIgnoreCase)) { label = kv.Key + "（按 --device 指定）"; return kv.Value; }
+                err = $"找不到 PLC: {device}。可选: {string.Join(", ", plcs.Select(p => p.Key))}";
+                return null;
+            }
+            label = plcs[0].Key + (plcs.Count > 1 ? $"（项目有多个 PLC，默认第一个；--device <名> 可指定，可选: {string.Join(", ", plcs.Select(p => p.Key))}）" : "");
+            return plcs[0].Value;
+        }
+
         private static IEnumerable<string> AllBlockNames(PlcBlockGroup group)
         {
             foreach (PlcBlock b in group.Blocks) yield return b.Name;
@@ -941,6 +1018,91 @@ namespace TiaMcp
             foreach (char c in Path.GetInvalidFileNameChars())
                 name = name.Replace(c, '_');
             return name;
+        }
+
+        // 在 outDir 下给 baseName+ext 取一个本次导出未用过的路径；重名则加 _dupN 后缀并计数。
+        // 只防"同一次导出"内的互相覆盖；重跑同一目录仍按原名覆盖旧导出（不会无限堆 _dupN）。
+        private static string UniqueExportPath(string dir, string baseName, string ext, HashSet<string> used, ref int dupCount)
+        {
+            string key = (baseName + ext).ToLowerInvariant();
+            if (used.Add(key)) return Path.Combine(dir, baseName + ext);
+            dupCount++;
+            int i = 2; string b;
+            do { b = baseName + "_dup" + i; i++; } while (!used.Add((b + ext).ToLowerInvariant()));
+            return Path.Combine(dir, b + ext);
+        }
+
+        // dry-run 用：启发式扫描 SCL 文本里的块定义名（先去注释，避免注释里的关键字误报）。
+        private static List<string> ScanSclBlockNames(string scl)
+        {
+            var names = new List<string>();
+            if (string.IsNullOrEmpty(scl)) return names;
+            string code = Regex.Replace(scl, @"\(\*.*?\*\)", " ", RegexOptions.Singleline);
+            code = Regex.Replace(code, @"//[^\r\n]*", " ");
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match m in Regex.Matches(code,
+                @"\b(?:FUNCTION_BLOCK|ORGANIZATION_BLOCK|DATA_BLOCK|FUNCTION|TYPE)\s+(?:""([^""]+)""|([A-Za-z_][A-Za-z0-9_]*))",
+                RegexOptions.IgnoreCase))
+            {
+                string nm = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+                if (nm.Length > 0 && seen.Add(nm)) names.Add(nm);
+            }
+            return names;
+        }
+
+        // dry-run 用：扫描 .udt 文本里的 TYPE 名。
+        private static List<string> ScanUdtNames(string udt)
+        {
+            var names = new List<string>();
+            if (string.IsNullOrEmpty(udt)) return names;
+            string code = Regex.Replace(udt, @"\(\*.*?\*\)", " ", RegexOptions.Singleline);
+            code = Regex.Replace(code, @"//[^\r\n]*", " ");
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match m in Regex.Matches(code, @"\bTYPE\s+(?:""([^""]+)""|([A-Za-z_][A-Za-z0-9_]*))", RegexOptions.IgnoreCase))
+            {
+                string nm = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+                if (nm.Length > 0 && seen.Add(nm)) names.Add(nm);
+            }
+            return names;
+        }
+
+        // dry-run 用：从 SimaticML XML 解析块名（SW.Blocks.* 元素的 AttributeList/Name）。
+        private static List<string> ScanXmlBlockNames(string xml)
+        {
+            var names = new List<string>();
+            try
+            {
+                var doc = XDocument.Parse(xml);
+                foreach (var el in doc.Descendants())
+                {
+                    if (!el.Name.LocalName.StartsWith("SW.Blocks.", StringComparison.Ordinal)) continue;
+                    var al = el.Elements().FirstOrDefault(e => e.Name.LocalName == "AttributeList");
+                    var nm = al?.Elements().FirstOrDefault(e => e.Name.LocalName == "Name")?.Value;
+                    if (!string.IsNullOrEmpty(nm)) names.Add(nm);
+                }
+            }
+            catch { }
+            return names;
+        }
+
+        // 顶层变量表(不建)查找——与 WriteTags 的 FindOrCreateTagTable 同口径，供 dry-run 预览判存在。
+        private static PlcTagTable FindTagTableTop(PlcSoftware plc, string tableName)
+        {
+            foreach (PlcTagTable tt in plc.TagTableGroup.TagTables)
+                if (string.Equals(tt.Name, tableName, StringComparison.OrdinalIgnoreCase)) return tt;
+            return null;
+        }
+
+        // 项目内全部 UDT 名（含分组），供 import-udt dry-run 判新建/覆盖。
+        private static IEnumerable<string> AllUdtNames(PlcSoftware plc)
+        {
+            return CollectUdtNames(plc.TypeGroup.Types, plc.TypeGroup.Groups);
+        }
+        private static IEnumerable<string> CollectUdtNames(PlcTypeComposition types, PlcTypeUserGroupComposition groups)
+        {
+            foreach (PlcType t in types) yield return t.Name;
+            foreach (PlcTypeUserGroup g in groups)
+                foreach (var n in CollectUdtNames(g.Types, g.Groups)) yield return n;
         }
 
         private static IEnumerable<PlcBlock> EnumerateAllBlocks(PlcBlockGroup group)

@@ -121,8 +121,14 @@ namespace TiaMcp
                         if (!header) { Console.WriteLine($"==== {dev.Name} 网络接口 ===="); header = true; }
                         try
                         {
+                            string ifPn = FirstAttr(it, "PnDeviceNameSetByUser", "PnDeviceName", "ProfinetDeviceName");
                             foreach (Node node in ni.Nodes)
-                                Console.WriteLine($"  {it.Name}: 地址={Attr(node, "Address")}  类型={Attr(node, "NodeType")}");
+                            {
+                                string nodePn = FirstAttr(node, "PnDeviceNameSetByUser", "PnDeviceName", "ProfinetDeviceName");
+                                string pn = !string.IsNullOrEmpty(nodePn) ? nodePn : ifPn;
+                                Console.WriteLine($"  {it.Name}: 地址={Attr(node, "Address")}  类型={Attr(node, "NodeType")}"
+                                    + (string.IsNullOrEmpty(pn) ? "" : $"  PN名={pn}"));
+                            }
                         }
                         catch (Exception ex) { Console.WriteLine("  (读节点失败: " + ex.Message + ")"); }
                     }
@@ -148,6 +154,17 @@ namespace TiaMcp
         {
             try { var v = o.GetAttribute(name); return v?.ToString() ?? ""; }
             catch { return "?"; }
+        }
+
+        // 依次尝试候选属性名，返回首个读到的非空值（读不到/不支持回空）。用于不同型号/固件属性名不一的字段（如 PROFINET 设备名）。
+        private static string FirstAttr(IEngineeringObject o, params string[] names)
+        {
+            foreach (var n in names)
+            {
+                try { var s = o.GetAttribute(n)?.ToString(); if (!string.IsNullOrEmpty(s) && s != "?") return s; }
+                catch { }
+            }
+            return "";
         }
     }
 }

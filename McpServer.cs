@@ -11,7 +11,7 @@ namespace TiaMcp
     /// 阶段5：手写 stdio JSON-RPC 2.0 的 MCP 服务器（不引官方 SDK）。
     /// 协议走 stdin/stdout 行分隔 JSON；诊断/日志走 stderr+文件，绝不污染 stdout。
     /// 做法：把每条工具调用映射成一个 argv，重定向 Console.Out 到 StringWriter 捕获命令输出，
-    /// 调用现有 Program.Dispatch(argv)，把捕获文本作为工具结果返回——不改动 54 条命令本身。
+    /// 调用现有 Program.Dispatch(argv)，把捕获文本作为工具结果返回——不改动命令本身。
     /// 文本类入参(SCL/XML/UDT/清单)接 inline 字符串，内部经 %TEMP% 写临时文件再传路径，即用即删。
     /// 本类不出现任何 Siemens.Engineering.* 类型（Siemens 代码都在 Dispatch 以下）。
     /// </summary>
@@ -27,7 +27,7 @@ namespace TiaMcp
             var rpc = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
             Console.SetOut(TextWriter.Null); // 空闲态：任何 stray Console.WriteLine 不落真实 stdout
-            Logger.Info("MCP 服务器启动 (stdio JSON-RPC, 54 工具)");
+            Logger.Info($"MCP 服务器启动 (stdio JSON-RPC, {Tools.Length} 工具)");
 
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             string line;
@@ -122,11 +122,49 @@ namespace TiaMcp
                 Console.SetOut(TextWriter.Null);
                 foreach (var f in tempFiles) { try { File.Delete(f); } catch { } }
             }
-            string text = sw.ToString();
+            string body = sw.ToString();
+            if (body.Length == 0) body = "(无输出)";
+            // 大产物卸载(F02)：超阈值文本写 %TEMP% 明文,只回摘要头+指针,避免灌爆上下文(CLAUDE.md「大产物不内联」)。
+            body = OffloadIfLarge(body, t.Name);
+            string text = body;
             if (note != null) text = note + "\n" + text;
-            if (text.Length == 0) text = "(无输出)";
             if (!isError) text += $"\n(退出码 {rc})";
-            return Tuple.Create(text, isError);
+            // 命令用非零退出码表达可恢复失败(2=命令错/3=密文输入/1=参数错)；映射到 isError，
+            // 否则零上下文 AI 会把失败的导入/编译/写入当成功(失败仅靠尾部'(退出码 N)'文本可辨)。
+            return Tuple.Create(text, isError || rc != 0);
+        }
+
+        private const int OffloadThreshold = 16000; // 字符;超过则写 %TEMP%、只回摘要头+指针,避免灌爆上下文
+
+        // 大产物卸载：>阈值的命令输出写 %TEMP% 明文(刻意不进 tempFiles、不在 finally 删,留给消费者按 path 读)，
+        // 回 [大产物] 摘要(path/charCount/sha256) + 前若干字符预览。卸载失败回退内联，绝不丢数据。
+        private static string OffloadIfLarge(string body, string toolName)
+        {
+            if (body == null || body.Length <= OffloadThreshold) return body;
+            try
+            {
+                string path = IoUtil.NewTempFile(".txt");
+                byte[] bytes = new UTF8Encoding(false).GetBytes(body);
+                File.WriteAllBytes(path, bytes);
+                string sha = IoUtil.Sha256Hex(bytes);
+                bool enc = IoUtil.LooksEncrypted(File.ReadAllBytes(path));
+                int headLen = Math.Min(2000, body.Length);
+                var sb = new StringBuilder();
+                sb.AppendLine($"[大产物] 本次输出 {body.Length} 字符，为避免灌爆上下文未全文内联。完整输出已写明文文件：");
+                sb.AppendLine($"  path={path}");
+                sb.AppendLine($"  charCount={body.Length}  sha256={sha}" + (enc ? "  [警告]刚写出即被加密，读取前请重跑本工具" : ""));
+                sb.AppendLine("  读取全文：用文件读取工具按上述 path 读(%TEMP% 根是 E-SafeNet 豁免区)。注意此文件含命令完整输出(含头尾横幅)；若需可直接 import 的纯净 XML/源码，请改用对应 export 命令的 outDir 入口另存。");
+                sb.AppendLine($"  ---- 前 {headLen} 字符预览 ----");
+                sb.Append(body.Substring(0, headLen));
+                sb.AppendLine();
+                sb.AppendLine("  ---- 预览结束(全文见上方 path) ----");
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("大产物卸载失败，回退内联: " + toolName, ex);
+                return body;
+            }
         }
 
         // 工具的有效"文件路径"入参名: 显式 PathParam 优先; 否则 TextParam 以 "Text" 结尾时自动派生 <名>Path; 都不满足回退 <名>Path/null
@@ -159,8 +197,11 @@ namespace TiaMcp
                 }
                 else if (hasText)
                 {
-                    string tmp = IoUtil.NewTempFile(t.TextExt);
-                    File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                    // 写给底层命令读的中转文件统一带 UTF-8 BOM(WriteTempPlaintextVerified)：
+                    // 现有命令都先经 DecodeUtf8StripBom 再处理(BOM 无害)，且即便将来某个 TextParam
+                    // 工具把此文件直接交给 TIA(CreateFromFile/Import)，也不会在中文 Windows 上被 GBK
+                    // 误解码 CJK 标识符(CLAUDE.md 1a BOM 铁律)。
+                    string tmp = IoUtil.WriteTempPlaintextVerified(text, t.TextExt);
                     tempFiles.Add(tmp);
                     argv.Add(tmp);
                 }
@@ -170,7 +211,12 @@ namespace TiaMcp
                     return null;
                 }
             }
-            foreach (var r in t.Req) { var v = Str(a, r); if (v != null) argv.Add(v); }
+            foreach (var r in t.Req)
+            {
+                var v = Str(a, r);
+                if (string.IsNullOrEmpty(v)) { error = $"缺少必填参数 {r}。"; return null; }
+                argv.Add(v);
+            }
             foreach (var op in t.Opt) { var v = Str(a, op); if (!string.IsNullOrEmpty(v)) argv.Add(v); }
             foreach (var vf in t.ValueFlags) { var v = Str(a, vf); if (!string.IsNullOrEmpty(v)) { argv.Add("--" + vf); argv.Add(v); } }
             foreach (var f in t.Flags) { if (Bool(a, f)) argv.Add("--" + f); }
@@ -262,7 +308,7 @@ namespace TiaMcp
             public Dictionary<string, string> P = new Dictionary<string, string>(); // 参数/旗标名->描述（覆盖 Schema 默认；零上下文 AI 选参填参的关键）
         }
 
-        // ===================== 54 工具登记表 =====================
+        // ===================== 工具登记表（数量见 Tools.Length） =====================
         private static readonly ToolDef[] Tools = new[]
         {
             // 读取
@@ -282,11 +328,11 @@ namespace TiaMcp
             // 硬件/库
             new ToolDef{ Name="device-list", Desc="项目所有设备的全局一览(一行一设备:类型 PLC/HMI/其他 + 型号/订货号,分布式IO站带GSD标记)。要单设备详情用 device-info" },
             new ToolDef{ Name="device-info", Desc="单设备详情:型号/订货号/固件/作者(CPU与各模块)", Opt=new[]{"deviceName"},
-                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备(已在 diagnostics 标注)" } },
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名(子串匹配);不传则列出项目内全部设备" } },
             new ToolDef{ Name="device-modules", Desc="机架/槽位/模块树(本地中央机架 + 分布式IO站模块)", Opt=new[]{"deviceName"},
-                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备" } },
-            new ToolDef{ Name="device-network", Desc="子网/IoSystem 拓扑 + 各网络接口 IP/PN名。均为离线组态值;Openness 不能在线分配/读取实际 IP", Opt=new[]{"deviceName"},
-                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名,不传默认第一个设备" } },
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名(子串匹配);不传则列出项目内全部设备" } },
+            new ToolDef{ Name="device-network", Desc="子网/IoSystem 拓扑 + 各网络接口节点地址(IP)/节点类型 + 尽力读 PROFINET 设备名(部分型号/固件可读,读到才显示)。均为离线组态值;Openness 不能在线分配/读取实际 IP", Opt=new[]{"deviceName"},
+                P=new Dictionary<string,string>{ ["deviceName"]="可选;设备名(子串匹配);不传则列出项目内全部设备" } },
             new ToolDef{ Name="library-list", Desc="项目库类型/母版副本 + 全局库枚举" },
             // 排查
             new ToolDef{ Name="where-used", Desc="谁引用了该符号(单跳、任意符号:块/DB/变量/UDT,支持 DB.成员)。要递归的块级被调树用 callers-tree", Req=new[]{"symbol"},
@@ -300,18 +346,18 @@ namespace TiaMcp
                 P=new Dictionary<string,string>{ ["blockName"]="被调树根块名" } },
             new ToolDef{ Name="crossref-report", Desc="全项目交叉引用 Markdown 报表(体积可大)" },
             // PLC 写/重构
-            new ToolDef{ Name="import-scl", Persist=true, Desc="导入 SCL 明文->生成块->自动编译报错。会覆盖同名块且无 dry-run,建议先 export-source 备份。【大 SCL 用 sclPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-source 的产物】", TextParam="sclText", TextExt=".scl",
-                P=new Dictionary<string,string>{ ["sclText"]="SCL 源码明文(小片段内联;大文件改用 sclPath 传磁盘路径);含同名块将被覆盖", ["sclPath"]="SCL 明文文件磁盘路径(.scl);大源码走此参免内联爆 token,与 sclText 二选一。常用 export-source 的产物" } },
-            new ToolDef{ Name="import-xml", Persist=true, Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')。Override 静默覆盖且无 dry-run,务必先 export-xml 备份。【大 XML 用 xmlPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-xml 的产物】", TextParam="xmlText", TextExt=".xml",
-                P=new Dictionary<string,string>{ ["xmlText"]="SimaticML XML 明文(小片段内联;大文件改用 xmlPath 传磁盘路径);同名块将被 Override 整块覆盖", ["xmlPath"]="SimaticML XML 文件磁盘路径(.xml);大 XML 走此参免内联爆 token,与 xmlText 二选一。常用 export-xml 的产物" } },
-            new ToolDef{ Name="import-udt", Persist=true, Desc="从明文 .udt 生成/覆盖 UDT。会覆盖同名 UDT 且无 dry-run", TextParam="udtText", TextExt=".udt",
-                P=new Dictionary<string,string>{ ["udtText"]="UDT 定义明文(小片段内联;大文件改用 udtPath 传磁盘路径);同名 UDT 将被覆盖", ["udtPath"]="UDT 明文文件磁盘路径(.udt);与 udtText 二选一。常用 export-udt 的产物" } },
-            new ToolDef{ Name="write-tags", Persist=true, Desc="批量新建 PLC 变量(只新建;改类型/地址用 edit-tags、删用 delete-tags)。无 dry-run", TextParam="listText", TextExt=".txt",
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|类型|地址(地址留空=符号变量)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一" } },
-            new ToolDef{ Name="delete-tags", Persist=true, Desc="删 PLC 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名 或 仅 变量名。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览将删哪些、不实际删(建议先跑)" } },
-            new ToolDef{ Name="edit-tags", Persist=true, Desc="改已有 PLC 变量的类型/地址(不能改名/注释)", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"},
-                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|新类型|新地址(留空=该项不改)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览改动、不实际写" } },
+            new ToolDef{ Name="import-scl", Persist=true, Desc="导入 SCL 明文->生成块->自动编译报错。会覆盖同名块(支持 --dry-run 预览将新建/覆盖哪些块),建议先 export-source 备份。【大 SCL 用 sclPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-source 的产物】", TextParam="sclText", TextExt=".scl", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["sclText"]="SCL 源码明文(小片段内联;大文件改用 sclPath 传磁盘路径);含同名块将被覆盖", ["sclPath"]="SCL 明文文件磁盘路径(.scl);大源码走此参免内联爆 token,与 sclText 二选一。常用 export-source 的产物", ["dry-run"]="true=只启发式扫描 SCL 块头、预览将新建/覆盖哪些块,不实际导入", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
+            new ToolDef{ Name="import-xml", Persist=true, Desc="导入 SimaticML 整块覆盖同名块(图形块的'写')。Override 整块覆盖(支持 --dry-run 预览将新建/覆盖哪些块),务必先 export-xml 备份。【大 XML 用 xmlPath 传磁盘路径,勿大段内联——内联体积过大会失败;典型来源 export-xml 的产物】", TextParam="xmlText", TextExt=".xml", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["xmlText"]="SimaticML XML 明文(小片段内联;大文件改用 xmlPath 传磁盘路径);同名块将被 Override 整块覆盖", ["xmlPath"]="SimaticML XML 文件磁盘路径(.xml);大 XML 走此参免内联爆 token,与 xmlText 二选一。常用 export-xml 的产物", ["dry-run"]="true=只解析 XML 块名、预览将新建/覆盖哪些块,不实际导入", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
+            new ToolDef{ Name="import-udt", Persist=true, Desc="从明文 .udt 生成/覆盖 UDT(支持 --dry-run 预览将新建/覆盖哪些 UDT)", TextParam="udtText", TextExt=".udt", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["udtText"]="UDT 定义明文(小片段内联;大文件改用 udtPath 传磁盘路径);同名 UDT 将被覆盖", ["udtPath"]="UDT 明文文件磁盘路径(.udt);与 udtText 二选一。常用 export-udt 的产物", ["dry-run"]="true=只扫描 UDT 名、预览将新建/覆盖哪些,不实际导入", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
+            new ToolDef{ Name="write-tags", Persist=true, Desc="批量新建 PLC 变量(只新建;改类型/地址用 edit-tags、删用 delete-tags)。支持 --dry-run 预览", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|类型|地址(地址留空=符号变量)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览将新建哪些变量(标注表/变量是否已存在),不实际写", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
+            new ToolDef{ Name="delete-tags", Persist=true, Desc="删 PLC 变量", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名 或 仅 变量名。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览将删哪些、不实际删(建议先跑)", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
+            new ToolDef{ Name="edit-tags", Persist=true, Desc="改已有 PLC 变量的类型/地址(不能改名/注释)", TextParam="listText", TextExt=".txt", Flags=new[]{"dry-run"}, ValueFlags=new[]{"device"},
+                P=new Dictionary<string,string>{ ["listText"]="每行一条: 表名|变量名|新类型|新地址(留空=该项不改)。inline 文本(大清单改用 listPath)", ["listPath"]="清单 .txt 文件磁盘路径;与 listText 二选一", ["dry-run"]="true=只预览改动、不实际写", ["device"]="可选;目标 PLC 名(多 PLC 时选择;不传=第一个并自动告警)" } },
             new ToolDef{ Name="delete-block", Persist=true, Desc="删块(删前查引用,被引用需 force)", Req=new[]{"blockName"}, Flags=new[]{"dry-run","force"},
                 P=new Dictionary<string,string>{ ["blockName"]="要删的块名", ["dry-run"]="true=只预览(含引用检查)、不实际删", ["force"]="即使该块仍被引用也强制删(危险,会留下悬空引用)" } },
             new ToolDef{ Name="rename-block", Persist=true, Desc="改块名(Openness 改名不更新引用,会告警影响面)", Req=new[]{"oldName","newName"}, Flags=new[]{"dry-run"},

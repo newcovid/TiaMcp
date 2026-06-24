@@ -4,7 +4,30 @@
 > 本地 Claude 记忆目录 `~/.claude/projects/<本项目>/memory/`（索引 MEMORY.md）。
 > 本文件只记"状态/清单/决策"，技术细节看 CLAUDE.md 与 memory。
 
-最近更新：2026-06-05（**HMI 变量字段补全：采集周期(读写)、来源注释(读)、绝对地址(写) — 已端到端实测**）
+最近更新：2026-06-24（**多代理审查后批量修复：21 确认项全部处置完毕——含 MCP 错误传播、PLC import/write 加 dry-run、大产物卸载、--device 多设备选择等**）
+
+> **2026-06-24 续（补完剩余项：F02 大产物卸载 + F12 --device + F13/F22 加强；build 0 错 1 无害警）**：
+> - **F02（大产物卸载方案，用户拍板轻量版）**：`McpServer.OffloadIfLarge`——命令输出 >16000 字符即写 %TEMP% 明文(刻意不进 tempFiles、留盘供按 path 读)，回 `[大产物] path/charCount/sha256 + 前2000字符预览`；export-xml/hmi-read-screen 等不再整段内联灌爆上下文。新增 `IoUtil.Sha256Hex`。**未做完整 JSON 信封/errorCode 枚举**(小输出保持纯文本,用户选轻量方案)。
+> - **F12 --device 多设备选择**：`Commands.SelectPlc` + 给 import-scl/xml/udt、write/edit/delete-tags 加可选 `--device <名>`(命中选该 PLC、未命中报错列可选、不传=第一个+告警可选项)；Program 解析、McpServer 注册 `ValueFlags=device`+描述。compile(按块名跨 PLC 查)/compile-device/export-all(遍历全部)不受 PLC[0] 偏置,未加。
+> - **F13 加强**：device-network 用 `FirstAttr` 尽力读 PROFINET 设备名(候选属性名,读到才显示 `PN名=`)，恢复描述"PN名(读到才显示)"。
+> - **F22 加强**：hmi-find-unused-tags 大产物指针补 `sha256`(复用 IoUtil.Sha256Hex)。
+> - **验证**：build 0 错；MCP tools/list 自检 60 工具、import-* + write/edit/delete-tags 均出 `device`+`dry-run`、compile 无(正确)。**21 确认项全部处置完毕(F02 取轻量卸载方案;F11 经校验驳回)**；文档(CLAUDE.md 实现状态/README/MCP-SETUP)同步。
+
+> **2026-06-24 缺陷修复批 ①（多代理审查 21 确认项首轮修 19；F02/F12 见上条「续」补完；build 0 错 1 无害警；活体闭环待用户在 TIA 机手测）**：
+> - **F01(高) MCP 错误传播**：`McpServer.RunTool` 把命令非零退出码映射到 `isError`（`isError || rc != 0`）。此前只有 Dispatch 抛异常才置位，而命令用退出码(2/3/1)表达失败 → 失败的 import/compile/unlock/write 全被报成 `isError:false`；现零上下文 AI 不再把失败当成功。
+> - **F03(高) 破坏性 PLC 工具补 dry-run**：`import-scl`/`import-xml`/`import-udt`/`write-tags` 新增 `--dry-run`（启发式扫块/UDT 名或解析 SimaticML 块名，列"新建/覆盖"，不写）。Program 分发 + McpServer ToolDef Flags + 描述同步。
+> - **F04(中) 导出重名防覆盖**：`export-all`/`export-watchtable` 平铺单目录时跨组/跨PLC 同名或清洗后重名会静默互相覆盖却仍计 ok++；现用 `UniqueExportPath` 加 `_dupN` 后缀并告警（仅防同次导出内覆盖，重跑仍按原名）。
+> - **F05/F06/F15 交叉引用与变量**：delete-tags 全失败返回 2(原恒 0)；find-unused/call-tree 排除并标注"导出失败"块(原仅排除受保护)；多 PLC 同名块依赖改 UnionWith 合并而非后者覆盖。
+> - **F07 StripSclNonCode 重写为单次左到右扫描**：消除"串联正则"下字符串内 `(*`/`*)` 吞掉真实 `"块名"` 引用的漏报(及注释内单引号配对吞码)，两方向同时正确。
+> - **F08/F16/F17/F18/F19 HMI 写**：SetLinkName/SetComment 改返回 bool，模板缺 AcquisitionCycle/Comment 结构时显式 `[警告]` 而非静默成功；HMI 清单解析补 `LooksEncrypted` 密文守卫(对齐 PLC 侧)；同批次"建后再引用"把克隆加入快照防同名重复；空变量名早拦；import-list 类型推断改按列表元素 LocalName `EndsWith` 而非整串子串(避免 `TextGraphicList` 命名空间误判)。
+> - **F09/F13 硬件描述**：device-info/modules/network 描述改"不传则列出全部设备"(原误称"默认第一个+diagnostics 标注")；device-network 去掉未实现的"PN名"宣称。
+> - **F10 IoUtil.LooksEncrypted**：识别 UTF-16/UTF-32 BOM 放行(原任意 NUL 即判密文,误伤非 UTF-8 明文)；"SafeNet" 头扫描窗口 64→512 字节。
+> - **F14 MCP BuildArgs** 校验必填位置参存在且非空(缺失/空串短路报错，原静默错位/透传空串)。
+> - **F21 MCP inline 中转文件改走 `WriteTempPlaintextVerified`**(带 BOM)：原 `File.WriteAllText(...UTF8(false))` 无 BOM，当前安全(下游均 DecodeUtf8StripBom)但靠未文档化不变量——改后即便将来某 TextParam 工具直传 TIA 也不会 CJK 乱码。
+> - **F22 HmiReads 大产物卸载**：`hmi-find-unused-tags` 写 %TEMP% 后补 `LooksEncrypted` 回校验+告警(对齐 export-source)。
+> - **F20/F02 文档校准**：工具数 54→**60**(McpServer 注释/启动日志改 `Tools.Length`、README×4、CLAUDE.md×2)；CLAUDE.md「MCP 打包 I/O 约定」标注统一信封/errorCode/>8KB 卸载/targetDevice 为 **v2未实现**(与 v1 现状一致，防 AI 误读)。
+> - **F02/F12 已在上条「续」补完**（本①轮 F02 仅文档校准、F12 推迟；续轮已落地大产物卸载与 --device）。
+> - **验证**：`dotnet build -c Release` 0 错 1 无害警(CS0649 PathParam,既有)；MCP `tools/list` 自检 60 工具、import-* / write-tags / delete-tags 均出 `dry-run`。重编 SHA256 变 → 下次真连 TIA 会重弹一次 Openness 授权。
 
 > **2026-06-05 HMI 变量字段补全（建/改/读全路径已端到端实测）**：
 > - **需求（用户）**：HMI 变量的 名称/数据类型/连接/PLC名称/PLC变量/地址/访问模式/**采集周期**/**来源注释**/注释 应都能读写增删。审计发现旧 `hmi-write-tags` 仅 7 列（表名/变量名/连接/PLC符号/[访问]/[注释]/[类型]），**采集周期完全缺失**（读侧 `hmi-read-tags` 也不显示）；来源注释、绝对地址也缺。
